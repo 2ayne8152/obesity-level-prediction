@@ -172,6 +172,41 @@ print("\nStarting hyperparameter search (this can take a few minutes)...")
 random_search.fit(X_train, y_train)
 results = pd.DataFrame(random_search.cv_results_)
 
+# ==========================================================
+# Mean CV Accuracy for Each Hyperparameter Value
+# ==========================================================
+
+parameters = [
+    "param_classifier__n_estimators",
+    "param_classifier__max_depth",
+    "param_classifier__learning_rate",
+    "param_classifier__subsample",
+    "param_classifier__colsample_bytree",
+    "param_classifier__min_child_weight",
+    "param_classifier__gamma",
+    "param_classifier__reg_alpha",
+    "param_classifier__reg_lambda"
+]
+
+for param in parameters:
+    
+    summary = (
+        results.groupby(param)["mean_test_score"]
+        .mean()
+        .reset_index()
+        .rename(columns={
+            "mean_test_score": "Mean_CV_Accuracy"
+        })
+        .sort_values("Mean_CV_Accuracy", ascending=False)
+    )
+
+    filename = param.replace("param_classifier__", "")
+
+    summary.to_csv(
+        f"csv/{filename}_mean_cv_accuracy.csv",
+        index=False
+    )
+
 print("\nBest parameters found:")
 for k, v in random_search.best_params_.items():
     print(f"  {k}: {v}")
@@ -190,7 +225,7 @@ print(f"(Baseline test accuracy was: {baseline_acc:.4f})")
 print("\nClassification report:\n")
 print(
     classification_report(
-        y_test, final_preds, target_names=target_encoder.classes_
+        y_test, final_preds, target_names=target_encoder.classes_, digits=4
     )
 )
 
@@ -201,9 +236,9 @@ disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=target_encoder
 disp.plot(ax=ax, xticks_rotation=45, cmap="Blues", colorbar=False)
 plt.title("Confusion Matrix — Tuned XGBoost")
 plt.tight_layout()
-plt.savefig("csv/confusion_matrix.png", dpi=150)
+plt.savefig("image/confusion_matrix.png", dpi=150)
 plt.close()
-print("\nSaved csv/confusion_matrix.png")
+print("\nSaved image/confusion_matrix.png")
 
 # --------------------------------------------------------------------------
 # 6. FEATURE IMPORTANCE
@@ -225,9 +260,9 @@ sns.barplot(x=feat_imp.values, y=feat_imp.index, color="steelblue")
 plt.title("Top 20 Feature Importances — Tuned XGBoost")
 plt.xlabel("Importance")
 plt.tight_layout()
-plt.savefig("csv/feature_importance.png", dpi=150)
+plt.savefig("image/feature_importance.png", dpi=150)
 plt.close()
-print("Saved csv/feature_importance.png")
+print("Saved image/feature_importance.png")
 
 # --------------------------------------------------------------------------
 # 7. SAVE THE FINAL MODEL
@@ -376,7 +411,7 @@ plt.ylabel("Mean CV Accuracy")
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("xgb_colsample.png", dpi=150)
+plt.savefig("tuning result/xgb_colsample.png", dpi=150)
 plt.show()
 
 # --------------------------------------------------------------------------
@@ -394,7 +429,7 @@ plt.ylabel("Mean CV Accuracy")
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("xgb_gamma.png", dpi=150)
+plt.savefig("tuning result/xgb_gamma.png", dpi=150)
 plt.show()
 
 # --------------------------------------------------------------------------
@@ -412,7 +447,7 @@ plt.ylabel("Mean CV Accuracy")
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("xgb_child_weight.png", dpi=150)
+plt.savefig("tuning result/xgb_child_weight.png", dpi=150)
 plt.show()
 
 # --------------------------------------------------------------------------
@@ -430,7 +465,7 @@ plt.ylabel("Mean CV Accuracy")
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("xgb_alpha.png", dpi=150)
+plt.savefig("tuning result/xgb_alpha.png", dpi=150)
 plt.show()
 
 # --------------------------------------------------------------------------
@@ -448,7 +483,7 @@ plt.ylabel("Mean CV Accuracy")
 plt.grid(True)
 
 plt.tight_layout()
-plt.savefig("xgb_lambda.png", dpi=150)
+plt.savefig("tuning result/xgb_lambda.png", dpi=150)
 plt.show()
 
 # --------------------------------------------------------------------------
