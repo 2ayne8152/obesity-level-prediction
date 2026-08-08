@@ -8,7 +8,7 @@ Pipeline:
   2. Preprocessing (encode categoricals, encode target, train/test split)
   3. Baseline XGBoost model
   4. Hyperparameter tuning (RandomizedSearchCV)
-  5. Evaluation (accuracy, classification report, confusion matrix, feature importance)
+  5. Evaluation (accuracy, classification report, ROC-AUC, confusion matrix, feature importance)
 
 Install requirements:
     pip install ucimlrepo xgboost scikit-learn pandas numpy matplotlib seaborn
@@ -21,7 +21,7 @@ import seaborn as sns
 
 from sklearn.model_selection import learning_curve
 from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, OrdinalEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
@@ -29,6 +29,7 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     ConfusionMatrixDisplay,
+    roc_auc_score,
 )
 
 from xgboost import XGBClassifier
@@ -39,12 +40,6 @@ RANDOM_STATE = 42
 # 1. LOAD DATA
 # --------------------------------------------------------------------------
 def load_data():
-    """
-    Try loading via the official ucimlrepo package first. If that fails
-    (e.g. no internet access), fall back to reading a local CSV named
-    'ObesityDataSet_raw_and_data_sinthetic.csv' that you can download from:
-    https://archive.ics.uci.edu/dataset/544
-    """
     try:
         from ucimlrepo import fetch_ucirepo
 
@@ -67,34 +62,126 @@ print("Target distribution:\n", y.value_counts())
 # --------------------------------------------------------------------------
 # 2. PREPROCESSING
 # --------------------------------------------------------------------------
-# Identify column types
+df = X.copy()
+df["NObeyesdad"] = y.values
+
+# ==========================
+# Binary Variables
+# ==========================
+binary_mapping = {
+    "Female": 0, "Male": 1,
+    "no": 0, "yes": 1
+}
+
+df["Gender"] = df["Gender"].map(binary_mapping)
+df["family_history_with_overweight"] = df["family_history_with_overweight"].map(binary_mapping)
+df["FAVC"] = df["FAVC"].map(binary_mapping)
+df["SMOKE"] = df["SMOKE"].map(binary_mapping)
+df["SCC"] = df["SCC"].map(binary_mapping)
+
+# ==========================
+# Ordinal Variables
+# ==========================
+
+# Consumption of food between meals
+df["CAEC"] = df["CAEC"].map({
+    "no": 0,
+    "Sometimes": 1,
+    "Frequently": 2,
+    "Always": 3
+})
+
+# Alcohol consumption
+df["CALC"] = df["CALC"].map({
+    "no": 0,
+    "Sometimes": 1,
+    "Frequently": 2,
+    "Always": 3
+})
+
+# Target class (ordered by obesity severity)
+target_mapping = {
+    "Insufficient_Weight": 0,
+    "Normal_Weight": 1,
+    "Overweight_Level_I": 2,
+    "Overweight_Level_II": 3,
+    "Obesity_Type_I": 4,
+    "Obesity_Type_II": 5,
+    "Obesity_Type_III": 6
+}
+df["NObeyesdad"] = df["NObeyesdad"].map(target_mapping)
+
+# ==========================
+# Nominal Variable
+# ==========================
+
+# Transportation mode (arbitrary labels for visualization only)
+df["MTRANS"] = df["MTRANS"].map({
+    "Walking": 0,
+    "Bike": 1,
+    "Motorbike": 2,
+    "Public_Transportation": 3,
+    "Automobile": 4
+})
+
+# ==========================
+# Separate Features and Target
+# ==========================
+X = df.drop("NObeyesdad", axis=1)   # Input features
+y = df["NObeyesdad"].astype(int)    # Target variable
+
 binary_cols = ["Gender", "family_history_with_overweight", "FAVC", "SMOKE", "SCC"]
-nominal_cols = ["CAEC", "CALC", "MTRANS"]          # multi-category, unordered
+ordinal_cols = ["CAEC", "CALC"]                    # already numeric, inherent low -> high order
+nominal_label_cols = ["MTRANS"]                    # already numeric, manually label encoded
 numeric_cols = ["Age", "Height", "Weight", "FCVC", "NCP", "CH2O", "FAF", "TUE"]
 
 # Keep only columns that actually exist (robust to minor naming differences)
 binary_cols = [c for c in binary_cols if c in X.columns]
-nominal_cols = [c for c in nominal_cols if c in X.columns]
+ordinal_cols = [c for c in ordinal_cols if c in X.columns]
+nominal_label_cols = [c for c in nominal_label_cols if c in X.columns]
 numeric_cols = [c for c in numeric_cols if c in X.columns]
-categorical_cols = binary_cols + nominal_cols
+categorical_cols = binary_cols + ordinal_cols + nominal_label_cols
 
-# Encode target labels (7 obesity classes -> integers)
-target_encoder = LabelEncoder()
-y_encoded = target_encoder.fit_transform(y)
-print("\nClasses:", list(target_encoder.classes_))
 
-# Train/test split (stratified to preserve class balance)
+class SimpleTargetEncoder:
+    """Lightweight wrapper exposing the same .classes_ / .inverse_transform()
+    interface as sklearn's LabelEncoder, built from the manual target
+    mapping above, so the rest of the script (classification_report,
+    confusion matrix labels, ROC-AUC table, joblib.dump) doesn't need to
+    change even though the target is now encoded by a plain dict.map()."""
+
+    def __init__(self, mapping):
+        # mapping: label -> code. Order classes_ by code so classes_[i]
+        # is the label whose code is i.
+        self.classes_ = np.array(sorted(mapping, key=mapping.get))
+
+    def inverse_transform(self, codes):
+        return self.classes_[np.asarray(codes).astype(int)]
+
+
+target_encoder = SimpleTargetEncoder(target_mapping)
+y_encoded = y.values
+print("\nClasses (in ordinal severity order):", list(target_encoder.classes_))
+
+# ==========================
+# 80:20 Train-Test Split
+# ==========================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y_encoded, test_size=0.2, random_state=RANDOM_STATE, stratify=y_encoded
+    X,
+    y_encoded,
+    test_size=0.20,       # 20% testing
+    random_state=RANDOM_STATE,  # ensures reproducibility
+    stratify=y_encoded,   # preserves class distribution
+    shuffle=True          # randomly shuffle before splitting
 )
 
-# ColumnTransformer: one-hot encode categoricals, pass numeric columns through.
-# Tree-based models like XGBoost don't need scaling, so numeric features
-# are left as-is.
+# ColumnTransformer: apply StandardScaler to the numeric features for
+# scaling; the binary/ordinal/nominal columns are already numeric from the
+# manual mapping above, so they pass through unchanged.
 preprocessor = ColumnTransformer(
     transformers=[
-        ("cat", OneHotEncoder(handle_unknown="ignore", drop="if_binary"), categorical_cols),
-        ("num", "passthrough", numeric_cols),
+        ("num", StandardScaler(), numeric_cols),
+        ("passthrough_cat", "passthrough", categorical_cols),
     ]
 )
 
@@ -229,6 +316,34 @@ print(
     )
 )
 
+# --------------------------------------------------------------------------
+# ROC-AUC (multiclass, one-vs-rest)
+# --------------------------------------------------------------------------
+final_probs = best_model.predict_proba(X_test)
+
+macro_roc_auc = roc_auc_score(
+    y_test, final_probs, multi_class="ovr", average="macro"
+)
+weighted_roc_auc = roc_auc_score(
+    y_test, final_probs, multi_class="ovr", average="weighted"
+)
+per_class_roc_auc = roc_auc_score(
+    y_test, final_probs, multi_class="ovr", average=None
+)
+
+print(f"\nMacro-average ROC-AUC (OvR): {macro_roc_auc:.4f}")
+print(f"Weighted-average ROC-AUC (OvR): {weighted_roc_auc:.4f}")
+
+roc_auc_df = pd.DataFrame(
+    {
+        "Class": target_encoder.classes_,
+        "ROC-AUC": per_class_roc_auc,
+    }
+).sort_values("ROC-AUC", ascending=False)
+
+print("\nPer-class ROC-AUC (OvR):")
+print(roc_auc_df.to_string(index=False))
+
 # Confusion matrix
 cm = confusion_matrix(y_test, final_preds)
 fig, ax = plt.subplots(figsize=(9, 8))
@@ -243,10 +358,10 @@ print("\nSaved image/confusion_matrix.png")
 # --------------------------------------------------------------------------
 # 6. FEATURE IMPORTANCE
 # --------------------------------------------------------------------------
-# Recover feature names after one-hot encoding
-ohe = best_model.named_steps["preprocessor"].named_transformers_["cat"]
-ohe_feature_names = list(ohe.get_feature_names_out(categorical_cols))
-all_feature_names = ohe_feature_names + numeric_cols
+# The ColumnTransformer applies StandardScaler to numeric_cols first, then
+# passes the already-encoded categorical columns through unchanged, so the
+# output feature order is numeric_cols followed by categorical_cols.
+all_feature_names = numeric_cols + categorical_cols
 
 importances = best_model.named_steps["classifier"].feature_importances_
 feat_imp = (
