@@ -1,0 +1,8 @@
+Class,ROC-AUC
+Obesity_Type_III,1.0
+Obesity_Type_II,0.9999081726354454
+Obesity_Type_I,0.999392958316471
+Overweight_Level_II,0.9992442135096835
+Overweight_Level_I,0.9968823807274446
+Normal_Weight,0.9930562116202172
+Insufficient_Weight,0.9919702900732711
