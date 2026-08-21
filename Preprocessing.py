@@ -1,10 +1,39 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
-# ==========================
-# Load Dataset
-# ==========================
-df = pd.read_csv("ObesityDataSet_raw_and_data_sinthetic.csv") 
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+
+RANDOM_STATE = 42
+
+# --------------------------------------------------------------------------
+# 1. LOAD DATA
+# --------------------------------------------------------------------------
+def load_data():
+    try:
+        from ucimlrepo import fetch_ucirepo
+
+        dataset = fetch_ucirepo(id=544)
+        X = dataset.data.features
+        y = dataset.data.targets.squeeze()  # Series
+        return X, y
+    except Exception as e:
+        print(f"ucimlrepo fetch failed ({e}); falling back to local CSV.")
+        df = pd.read_csv("csv/ObesityDataSet_raw_and_data_sinthetic.csv")
+        y = df["NObeyesdad"]
+        X = df.drop(columns=["NObeyesdad"])
+        return X, y
+
+
+X, y = load_data()
+print("Feature matrix shape:", X.shape)
+print("Target distribution:\n", y.value_counts())
+
+# --------------------------------------------------------------------------
+# 2. PREPROCESSING
+# --------------------------------------------------------------------------
+df = X.copy()
+df["NObeyesdad"] = y.values
 
 # ==========================
 # Binary Variables
@@ -41,7 +70,7 @@ df["CALC"] = df["CALC"].map({
 })
 
 # Target class (ordered by obesity severity)
-df["NObeyesdad"] = df["NObeyesdad"].map({
+target_mapping = {
     "Insufficient_Weight": 0,
     "Normal_Weight": 1,
     "Overweight_Level_I": 2,
@@ -49,7 +78,8 @@ df["NObeyesdad"] = df["NObeyesdad"].map({
     "Obesity_Type_I": 4,
     "Obesity_Type_II": 5,
     "Obesity_Type_III": 6
-})
+}
+df["NObeyesdad"] = df["NObeyesdad"].map(target_mapping)
 
 # ==========================
 # Nominal Variable

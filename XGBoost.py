@@ -14,6 +14,7 @@ from sklearn.metrics import (
     confusion_matrix,
     ConfusionMatrixDisplay,
     roc_auc_score,
+    roc_auc_score,
 )
 
 from xgboost import XGBClassifier
@@ -45,14 +46,83 @@ print("Target distribution:\n", y.value_counts())
 # --------------------------------------------------------------------------
 # 2. PREPROCESSING
 # --------------------------------------------------------------------------
-# Identify column types
+df = X.copy()
+df["NObeyesdad"] = y.values
+
+# ==========================
+# Binary Variables
+# ==========================
+binary_mapping = {
+    "Female": 0, "Male": 1,
+    "no": 0, "yes": 1
+}
+
+df["Gender"] = df["Gender"].map(binary_mapping)
+df["family_history_with_overweight"] = df["family_history_with_overweight"].map(binary_mapping)
+df["FAVC"] = df["FAVC"].map(binary_mapping)
+df["SMOKE"] = df["SMOKE"].map(binary_mapping)
+df["SCC"] = df["SCC"].map(binary_mapping)
+
+# ==========================
+# Ordinal Variables
+# ==========================
+
+# Consumption of food between meals
+df["CAEC"] = df["CAEC"].map({
+    "no": 0,
+    "Sometimes": 1,
+    "Frequently": 2,
+    "Always": 3
+})
+
+# Alcohol consumption
+df["CALC"] = df["CALC"].map({
+    "no": 0,
+    "Sometimes": 1,
+    "Frequently": 2,
+    "Always": 3
+})
+
+# Target class (ordered by obesity severity)
+target_mapping = {
+    "Insufficient_Weight": 0,
+    "Normal_Weight": 1,
+    "Overweight_Level_I": 2,
+    "Overweight_Level_II": 3,
+    "Obesity_Type_I": 4,
+    "Obesity_Type_II": 5,
+    "Obesity_Type_III": 6
+}
+df["NObeyesdad"] = df["NObeyesdad"].map(target_mapping)
+
+# ==========================
+# Nominal Variable
+# ==========================
+
+# Transportation mode (arbitrary labels for visualization only)
+df["MTRANS"] = df["MTRANS"].map({
+    "Walking": 0,
+    "Bike": 1,
+    "Motorbike": 2,
+    "Public_Transportation": 3,
+    "Automobile": 4
+})
+
+# ==========================
+# Separate Features and Target
+# ==========================
+X = df.drop("NObeyesdad", axis=1)   # Input features
+y = df["NObeyesdad"].astype(int)    # Target variable
+
 binary_cols = ["Gender", "family_history_with_overweight", "FAVC", "SMOKE", "SCC"]
-nominal_cols = ["CAEC", "CALC", "MTRANS"]          # multi-category, unordered
+ordinal_cols = ["CAEC", "CALC"]                    # already numeric, inherent low -> high order
+nominal_label_cols = ["MTRANS"]                    # already numeric, manually label encoded
 numeric_cols = ["Age", "Height", "Weight", "FCVC", "NCP", "CH2O", "FAF", "TUE"]
 
 # Keep only columns that actually exist (robust to minor naming differences)
 binary_cols = [c for c in binary_cols if c in X.columns]
-nominal_cols = [c for c in nominal_cols if c in X.columns]
+ordinal_cols = [c for c in ordinal_cols if c in X.columns]
+nominal_label_cols = [c for c in nominal_label_cols if c in X.columns]
 numeric_cols = [c for c in numeric_cols if c in X.columns]
 categorical_cols = binary_cols + nominal_cols
 
@@ -69,9 +139,16 @@ preprocessor = ColumnTransformer(
     ]
 )
 
-# Train/test split (stratified to preserve class balance)
+# ==========================
+# 80:20 Train-Test Split
+# ==========================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y_encoded, test_size=0.2, random_state=RANDOM_STATE, stratify=y_encoded
+    X,
+    y_encoded,
+    test_size=0.20,       # 20% testing
+    random_state=RANDOM_STATE,  # ensures reproducibility
+    stratify=y_encoded,   # preserves class distribution
+    shuffle=True          # randomly shuffle before splitting
 )
 
 
@@ -158,6 +235,34 @@ roc_auc_df = pd.DataFrame(
 print("\nPer-class ROC-AUC (OvR):")
 print(roc_auc_df.to_string(index=False))
 
+# --------------------------------------------------------------------------
+# ROC-AUC (multiclass, one-vs-rest)
+# --------------------------------------------------------------------------
+final_probs = best_model.predict_proba(X_test)
+
+macro_roc_auc = roc_auc_score(
+    y_test, final_probs, multi_class="ovr", average="macro"
+)
+weighted_roc_auc = roc_auc_score(
+    y_test, final_probs, multi_class="ovr", average="weighted"
+)
+per_class_roc_auc = roc_auc_score(
+    y_test, final_probs, multi_class="ovr", average=None
+)
+
+print(f"\nMacro-average ROC-AUC (OvR): {macro_roc_auc:.4f}")
+print(f"Weighted-average ROC-AUC (OvR): {weighted_roc_auc:.4f}")
+
+roc_auc_df = pd.DataFrame(
+    {
+        "Class": target_encoder.classes_,
+        "ROC-AUC": per_class_roc_auc,
+    }
+).sort_values("ROC-AUC", ascending=False)
+
+print("\nPer-class ROC-AUC (OvR):")
+print(roc_auc_df.to_string(index=False))
+
 # Confusion matrix
 cm = confusion_matrix(y_test, final_preds)
 fig, ax = plt.subplots(figsize=(9, 8))
@@ -172,6 +277,10 @@ print("\nSaved image/confusion_matrix.png")
 # --------------------------------------------------------------------------
 # 6. FEATURE IMPORTANCE
 # --------------------------------------------------------------------------
+# The ColumnTransformer applies StandardScaler to numeric_cols first, then
+# passes the already-encoded categorical columns through unchanged, so the
+# output feature order is numeric_cols followed by categorical_cols.
+all_feature_names = numeric_cols + categorical_cols
 # The ColumnTransformer applies StandardScaler to numeric_cols first, then
 # passes the already-encoded categorical columns through unchanged, so the
 # output feature order is numeric_cols followed by categorical_cols.
