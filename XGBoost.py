@@ -214,10 +214,10 @@ print("Saved image/feature_importance.png")
 # --------------------------------------------------------------------------
 import joblib
 
-joblib.dump(best_model, "csv/xgboost_obesity_model.pkl")
-joblib.dump(target_encoder, "csv/target_label_encoder.pkl")
-print("\nSaved trained pipeline to csv/xgboost_obesity_model.pkl")
-print("Saved target label encoder to csv/target_label_encoder.pkl")
+joblib.dump(best_model, "pkl/xgboost_obesity_model.pkl")
+joblib.dump(target_encoder, "pkl/target_label_encoder.pkl")
+print("\nSaved trained pipeline to pkl/xgboost_obesity_model.pkl")
+print("Saved target label encoder to pkl/target_label_encoder.pkl")
 
 # --------------------------------------------------------------------------
 # LEARNING CURVE
