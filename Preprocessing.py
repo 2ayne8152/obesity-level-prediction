@@ -1,6 +1,13 @@
 # --------------------------------------------------------------------------
 # 1. LOAD DATA
 # --------------------------------------------------------------------------
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
+
+from XGBoost import RANDOM_STATE
+
+
 def load_data():
     """
     Try loading via the official ucimlrepo package first. If that fails
@@ -57,6 +64,6 @@ X_train, X_test, y_train, y_test = train_test_split(
 preprocessor = ColumnTransformer(
     transformers=[
         ("cat", OneHotEncoder(handle_unknown="ignore", drop="if_binary"), categorical_cols),
-        ("num", "passthrough", numeric_cols),
+        ("num", StandardScaler(), numeric_cols),
     ]
 )
