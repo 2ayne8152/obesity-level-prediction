@@ -1,18 +1,27 @@
 """
 Streamlit GUI — Obesity Level Prediction
 ==========================================
-Loads the XGBoost pipeline trained in `xgboost_obesity_best_params.py`
-(`csv/xgboost_obesity_model.pkl` + `csv/target_label_encoder.pkl`) and lets
-the user enter eating-habit / physical-condition features through sliders
-(numeric) and dropdowns (categorical) to get a predicted obesity level.
+Loads either of two trained pipelines and lets the user enter eating-habit /
+physical-condition features through sliders (numeric) and dropdowns
+(categorical) to get a predicted obesity level:
+
+  - XGBoost       (trained in `xgboost_obesity_best_params.py`)
+                  pkl/xgboost_obesity_model.pkl + pkl/target_label_encoder.pkl
+  - Random Forest (trained in `RandomForest.py`)
+                  saved_model/random_forest_model.pkl + saved_model/rf_target_encoder.pkl
+
+A model selector at the top of the page lets the user switch between them;
+predictions, probabilities, and the prediction chart update accordingly.
 
 Run with:
     streamlit run obesity_prediction_app.py
 
 Expects the following files to exist relative to where you launch the app
-(same paths the training script saves to):
-    csv/xgboost_obesity_model.pkl
-    csv/target_label_encoder.pkl
+(same paths each training script saves to):
+    pkl/xgboost_obesity_model.pkl
+    pkl/target_label_encoder.pkl
+    saved_model/random_forest_model.pkl
+    saved_model/rf_target_encoder.pkl
 """
 
 import joblib
@@ -20,8 +29,23 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-MODEL_PATH = "pkl/xgboost_obesity_model.pkl"
-ENCODER_PATH = "pkl/target_label_encoder.pkl"
+# --------------------------------------------------------------------------
+# MODEL REGISTRY
+# --------------------------------------------------------------------------
+# Add further models here later (name -> paths + display label) without
+# touching anything else in the app.
+MODELS = {
+    "XGBoost": {
+        "model_path": "pkl/xgboost_obesity_model.pkl",
+        "encoder_path": "pkl/target_label_encoder.pkl",
+        "display_name": "tuned XGBoost model",
+    },
+    "Random Forest": {
+        "model_path": "pkl/random_forest_model.pkl",
+        "encoder_path": "pkl/rf_target_encoder.pkl",
+        "display_name": "tuned Random Forest model",
+    },
+}
 
 # --------------------------------------------------------------------------
 # PAGE CONFIG
@@ -33,21 +57,15 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------------
-# LOAD MODEL (cached so it only loads once per session)
+# LOAD MODEL (cached per model choice, so each is only loaded once per session)
 # --------------------------------------------------------------------------
 @st.cache_resource
-def load_model():
-    model = joblib.load(MODEL_PATH)
-    target_encoder = joblib.load(ENCODER_PATH)
+def load_model(model_key):
+    paths = MODELS[model_key]
+    model = joblib.load(paths["model_path"])
+    target_encoder = joblib.load(paths["encoder_path"])
     return model, target_encoder
 
-
-try:
-    model, target_encoder = load_model()
-    model_loaded = True
-except Exception as e:
-    model_loaded = False
-    load_error = e
 
 # --------------------------------------------------------------------------
 # FEATURE DEFINITIONS
@@ -87,7 +105,7 @@ CATEGORICAL_LABELS = {
     "MTRANS": "Main mode of transportation",
 }
 
-# Column order the model's preprocessor was trained on
+# Column order the models' preprocessors were trained on
 FEATURE_ORDER = [
     "Gender", "Age", "Height", "Weight", "family_history_with_overweight",
     "FAVC", "FCVC", "NCP", "CAEC", "SMOKE", "CH2O", "SCC", "FAF", "TUE",
@@ -100,14 +118,32 @@ FEATURE_ORDER = [
 st.title("⚖️ Obesity Level Predictor")
 st.write(
     "Enter eating-habit and physical-condition information below, then "
-    "click **Predict** to estimate the obesity level using a tuned "
-    "XGBoost model."
+    "click **Predict** to estimate the obesity level."
 )
 
+# --------------------------------------------------------------------------
+# MODEL SELECTOR
+# --------------------------------------------------------------------------
+model_choice = st.selectbox(
+    "Prediction model",
+    list(MODELS.keys()),
+    help="Choose which trained model to use for the prediction below.",
+)
+
+try:
+    model, target_encoder = load_model(model_choice)
+    model_loaded = True
+except Exception as e:
+    model_loaded = False
+    load_error = e
+
+st.caption(f"Using the {MODELS[model_choice]['display_name']}.")
+
 if not model_loaded:
+    paths = MODELS[model_choice]
     st.error(
-        f"Could not load the trained model/encoder.\n\n"
-        f"Expected files:\n- `{MODEL_PATH}`\n- `{ENCODER_PATH}`\n\n"
+        f"Could not load the trained model/encoder for **{model_choice}**.\n\n"
+        f"Expected files:\n- `{paths['model_path']}`\n- `{paths['encoder_path']}`\n\n"
         f"Error: {load_error}"
     )
     st.stop()
@@ -230,6 +266,7 @@ if submitted:
     st.divider()
     st.subheader("Prediction Result")
     st.success(f"**Predicted obesity level:** {predicted_label.replace('_', ' ')}")
+    st.caption(f"Model used: {MODELS[model_choice]['display_name']}")
 
     # BMI for context (not used by the model, just informative)
     bmi = weight / (height ** 2)
