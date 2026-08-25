@@ -5,7 +5,12 @@ import matplotlib.pyplot as plt
 import os
 import joblib
 
-from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import (
+    OrdinalEncoder,
+    OneHotEncoder,
+    StandardScaler
+)
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -17,7 +22,7 @@ from statsmodels.miscmodels.ordinal_model import OrderedModel
 
 
 # ============================================================
-# Import preprocessed train/test data
+# Import Training/Test Data
 # ============================================================
 
 from Preprocessing import (
@@ -29,43 +34,262 @@ from Preprocessing import (
 
 
 # ============================================================
+# Configuration
+# ============================================================
+
+RANDOM_STATE = 42
+N_SPLITS = 5
+
+MODEL_DIRECTORY = "saved_models"
+
+FINAL_MODEL_PATH = os.path.join(
+    MODEL_DIRECTORY,
+    "ordinal_logistic_regression.pkl"
+)
+
+PREPROCESSOR_PATH = os.path.join(
+    MODEL_DIRECTORY,
+    "ordinal_logistic_preprocessor.pkl"
+)
+
+FEATURES_PATH = os.path.join(
+    MODEL_DIRECTORY,
+    "ordinal_logistic_features.pkl"
+)
+
+
+# ============================================================
+# Create Saved Model Directory
+# ============================================================
+
+os.makedirs(
+    MODEL_DIRECTORY,
+    exist_ok=True
+)
+
+
+# ============================================================
 # Keep RAW Training/Test Data
 # ============================================================
 
-# Keep the original data before converting MTRANS into
-# dummy variables.
+# X_train and X_test from the new Preprocessing.py are still
+# raw feature DataFrames.
 #
-# Each cross-validation fold will perform its own
-# preprocessing.
+# Preprocessing is performed separately inside each
+# cross-validation fold to prevent data leakage.
 
 X_train_raw = X_train.copy()
 X_test_raw = X_test.copy()
 
-y_train = y_train.astype(int)
-y_test = y_test.astype(int)
+
+# The new Preprocessing.py returns y_train and y_test as
+# NumPy arrays.
+
+y_train = np.asarray(
+    y_train
+).astype(int)
+
+y_test = np.asarray(
+    y_test
+).astype(int)
 
 
 # ============================================================
-# Prepare Features Function
+# Feature Definitions
 # ============================================================
 
-def prepare_features(X):
+binary_cols = [
+    "Gender",
+    "family_history_with_overweight",
+    "FAVC",
+    "SMOKE",
+    "SCC"
+]
 
-    X = X.copy()
+ordinal_cols = [
+    "CAEC",
+    "CALC"
+]
 
-    # MTRANS is a nominal variable.
-    # Convert it into dummy variables so that the Ordinal
-    # Logistic Regression model does not treat transportation
-    # modes as ordered numerical values.
+nominal_cols = [
+    "MTRANS"
+]
 
-    X = pd.get_dummies(
-        X,
-        columns=["MTRANS"],
-        prefix="MTRANS",
-        dtype=int
+numeric_cols = [
+    "Age",
+    "Height",
+    "Weight",
+    "FCVC",
+    "NCP",
+    "CH2O",
+    "FAF",
+    "TUE"
+]
+
+
+# ============================================================
+# Keep Only Existing Columns
+# ============================================================
+
+binary_cols = [
+    column
+    for column in binary_cols
+    if column in X_train_raw.columns
+]
+
+ordinal_cols = [
+    column
+    for column in ordinal_cols
+    if column in X_train_raw.columns
+]
+
+nominal_cols = [
+    column
+    for column in nominal_cols
+    if column in X_train_raw.columns
+]
+
+numeric_cols = [
+    column
+    for column in numeric_cols
+    if column in X_train_raw.columns
+]
+
+
+# ============================================================
+# Explicit Category Definitions
+# ============================================================
+
+binary_categories = {
+    "Gender": [
+        "Female",
+        "Male"
+    ],
+
+    "family_history_with_overweight": [
+        "no",
+        "yes"
+    ],
+
+    "FAVC": [
+        "no",
+        "yes"
+    ],
+
+    "SMOKE": [
+        "no",
+        "yes"
+    ],
+
+    "SCC": [
+        "no",
+        "yes"
+    ]
+}
+
+
+ordinal_categories = {
+    "CAEC": [
+        "no",
+        "Sometimes",
+        "Frequently",
+        "Always"
+    ],
+
+    "CALC": [
+        "no",
+        "Sometimes",
+        "Frequently",
+        "Always"
+    ]
+}
+
+
+# ============================================================
+# Create Preprocessor
+# ============================================================
+
+def create_preprocessor():
+
+    current_binary_categories = [
+        binary_categories[column]
+        for column in binary_cols
+    ]
+
+    current_ordinal_categories = [
+        ordinal_categories[column]
+        for column in ordinal_cols
+    ]
+
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+
+            # ------------------------------------------------
+            # Binary Variables
+            # ------------------------------------------------
+
+            (
+                "bin",
+
+                OrdinalEncoder(
+                    categories=current_binary_categories
+                ),
+
+                binary_cols
+            ),
+
+
+            # ------------------------------------------------
+            # Ordinal Variables
+            # ------------------------------------------------
+
+            (
+                "ord",
+
+                OrdinalEncoder(
+                    categories=current_ordinal_categories
+                ),
+
+                ordinal_cols
+            ),
+
+
+            # ------------------------------------------------
+            # Nominal Variables
+            # ------------------------------------------------
+
+            (
+                "nom",
+
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    drop="first",
+                    sparse_output=False
+                ),
+
+                nominal_cols
+            ),
+
+
+            # ------------------------------------------------
+            # Numerical Variables
+            # ------------------------------------------------
+
+            (
+                "num",
+
+                StandardScaler(),
+
+                numeric_cols
+            )
+        ],
+
+        remainder="drop"
     )
 
-    return X
+
+    return preprocessor
 
 
 # ============================================================
@@ -76,7 +300,7 @@ def cross_validate_method(
     X,
     y,
     method,
-    n_splits=5
+    n_splits=N_SPLITS
 ):
 
     # --------------------------------------------------------
@@ -86,16 +310,26 @@ def cross_validate_method(
     skf = StratifiedKFold(
         n_splits=n_splits,
         shuffle=True,
-        random_state=42
+        random_state=RANDOM_STATE
     )
+
+
+    # --------------------------------------------------------
+    # Store Fold Results
+    # --------------------------------------------------------
 
     fold_accuracies = []
     fold_training_times = []
 
-    # Track whether any fold fails
+
+    # --------------------------------------------------------
+    # Failure Tracking
+    # --------------------------------------------------------
+
     failed = False
 
-    # Store the error message if a fold fails
+    failed_fold = None
+
     error_message = ""
 
 
@@ -103,7 +337,10 @@ def cross_validate_method(
     # Run Each Fold
     # ========================================================
 
-    for fold, (train_index, validation_index) in enumerate(
+    for fold, (
+        train_index,
+        validation_index
+    ) in enumerate(
         skf.split(X, y),
         start=1
     ):
@@ -113,84 +350,111 @@ def cross_validate_method(
             end=""
         )
 
+
         try:
 
             # ------------------------------------------------
             # Split Fold
             # ------------------------------------------------
 
-            X_fold_train = X.iloc[train_index].copy()
-            X_fold_valid = X.iloc[validation_index].copy()
+            X_fold_train = X.iloc[
+                train_index
+            ].copy()
 
-            y_fold_train = y.iloc[train_index].copy()
-            y_fold_valid = y.iloc[validation_index].copy()
+            X_fold_valid = X.iloc[
+                validation_index
+            ].copy()
 
 
-            # ------------------------------------------------
-            # Prepare Features
-            # ------------------------------------------------
+            y_fold_train = y[
+                train_index
+            ]
 
-            X_fold_train = prepare_features(
-                X_fold_train
-            )
-
-            X_fold_valid = prepare_features(
-                X_fold_valid
-            )
+            y_fold_valid = y[
+                validation_index
+            ]
 
 
             # ------------------------------------------------
-            # Ensure Same Columns
+            # Create Fold-Specific Preprocessor
             # ------------------------------------------------
 
-            X_fold_valid = X_fold_valid.reindex(
-                columns=X_fold_train.columns,
-                fill_value=0
+            fold_preprocessor = (
+                create_preprocessor()
             )
 
 
             # ------------------------------------------------
-            # Standardise Features
+            # Fit Preprocessor ONLY on Training Fold
             # ------------------------------------------------
 
-            # Fit the scaler ONLY on the fold-training data.
-            # This prevents validation-data leakage.
-
-            fold_scaler = StandardScaler()
-
-            X_fold_train_scaled = fold_scaler.fit_transform(
-                X_fold_train
-            )
-
-            X_fold_valid_scaled = fold_scaler.transform(
-                X_fold_valid
+            X_fold_train_processed = (
+                fold_preprocessor.fit_transform(
+                    X_fold_train
+                )
             )
 
 
             # ------------------------------------------------
-            # Convert Back to DataFrame
+            # Transform Validation Fold
             # ------------------------------------------------
 
-            X_fold_train_scaled = pd.DataFrame(
-                X_fold_train_scaled,
-                columns=X_fold_train.columns,
+            X_fold_valid_processed = (
+                fold_preprocessor.transform(
+                    X_fold_valid
+                )
+            )
+
+
+            # ------------------------------------------------
+            # Get Feature Names
+            # ------------------------------------------------
+
+            feature_names = (
+                fold_preprocessor
+                .get_feature_names_out()
+            )
+
+
+            # ------------------------------------------------
+            # Convert Processed Data to DataFrames
+            # ------------------------------------------------
+
+            X_fold_train_processed = pd.DataFrame(
+                X_fold_train_processed,
+                columns=feature_names,
                 index=X_fold_train.index
             )
 
-            X_fold_valid_scaled = pd.DataFrame(
-                X_fold_valid_scaled,
-                columns=X_fold_train.columns,
+            X_fold_valid_processed = pd.DataFrame(
+                X_fold_valid_processed,
+                columns=feature_names,
                 index=X_fold_valid.index
             )
 
 
             # ------------------------------------------------
-            # Create Ordinal Logistic Regression Model
+            # Convert Targets to Series
             # ------------------------------------------------
 
+            y_fold_train_series = pd.Series(
+                y_fold_train,
+                index=X_fold_train.index
+            )
+
+            y_fold_valid_series = pd.Series(
+                y_fold_valid,
+                index=X_fold_valid.index
+            )
+
+
+            # =================================================
+            # Create Ordinal Logistic Regression Model
+            # =================================================
+
             model = OrderedModel(
-                endog=y_fold_train,
-                exog=X_fold_train_scaled,
+                endog=y_fold_train_series,
+                exog=X_fold_train_processed,
                 distr="logit"
             )
 
@@ -199,72 +463,60 @@ def cross_validate_method(
             # Start Training Timer
             # =================================================
 
-            training_start_time = time.perf_counter()
+            training_start_time = (
+                time.perf_counter()
+            )
 
 
-            # ------------------------------------------------
+            # =================================================
             # Train Model
-            # ------------------------------------------------
+            # =================================================
 
             result = model.fit(
                 method=method,
                 disp=False
             )
-            # ============================================================
-            # Save Final Model
-            # ============================================================
 
-            os.makedirs(
-                "saved_models",
-                exist_ok=True
-            )
-
-            model_path = os.path.join(
-                "saved_models",
-                "ordinal_logistic_regression.pkl"
-            )
-
-            result.save(
-                model_path
-            )
-
-            print(
-                f"Model saved to: "
-                f"{model_path}"
-            )
-        
 
             # =================================================
             # End Training Timer
             # =================================================
 
-            training_end_time = time.perf_counter()
+            training_end_time = (
+                time.perf_counter()
+            )
+
 
             fold_training_time = (
                 training_end_time
                 - training_start_time
             )
 
+
+            # ------------------------------------------------
+            # Store Training Time
+            # ------------------------------------------------
+
             fold_training_times.append(
                 fold_training_time
             )
 
 
-            # ------------------------------------------------
+            # =================================================
             # Predict Validation Probabilities
-            # ------------------------------------------------
+            # =================================================
 
             predicted_probabilities = (
                 result.model.predict(
                     result.params,
-                    exog=X_fold_valid_scaled
+                    exog=X_fold_valid_processed
                 )
             )
 
 
-            # ------------------------------------------------
+            # =================================================
             # Predict Final Class
-            # ------------------------------------------------
+            # =================================================
 
             y_pred = np.argmax(
                 predicted_probabilities,
@@ -274,19 +526,24 @@ def cross_validate_method(
             y_pred = y_pred.astype(int)
 
 
-            # ------------------------------------------------
+            # =================================================
             # Calculate Fold Accuracy
-            # ------------------------------------------------
+            # =================================================
 
             fold_accuracy = accuracy_score(
-                y_fold_valid,
+                y_fold_valid_series,
                 y_pred
             )
+
 
             fold_accuracies.append(
                 fold_accuracy
             )
 
+
+            # =================================================
+            # Display Successful Fold
+            # =================================================
 
             print(
                 f"Accuracy = {fold_accuracy:.4f}, "
@@ -296,31 +553,68 @@ def cross_validate_method(
 
 
         # ====================================================
-        # Handle Failed Optimisation
+        # Handle Failed Fold
         # ====================================================
 
         except Exception as e:
 
             failed = True
 
+            failed_fold = fold
+
             error_message = (
                 f"{type(e).__name__}: {str(e)}"
             )
 
-            print("FAILED")
+
+            print(
+                "FAILED"
+            )
+
 
             print(
                 f"        Error: {error_message}"
             )
 
-            # Stop testing remaining folds for this method.
-            # A complete 5-fold CV result is required.
+
+            # ------------------------------------------------
+            # Newton-Specific Explanation
+            # ------------------------------------------------
+
+            if method.lower() == "newton":
+
+                print(
+                    "        Newton's method failed during "
+                    "this fold."
+                )
+
+                print(
+                    "        This commonly occurs when the "
+                    "Hessian matrix is singular and cannot "
+                    "be inverted."
+                )
+
+
+            # ------------------------------------------------
+            # Stop Remaining Folds
+            # ------------------------------------------------
+
+            print(
+                f"        Optimisation method '{method}' "
+                f"is marked as FAILED."
+            )
+
+            print(
+                "        Remaining folds will not be "
+                "tested for this method."
+            )
+
 
             break
 
 
     # ========================================================
-    # Return Results if Method Failed
+    # Failed Method
     # ========================================================
 
     if failed:
@@ -331,12 +625,30 @@ def cross_validate_method(
             fold_accuracies,
             fold_training_times,
             "Failed",
+            failed_fold,
             error_message
         )
 
 
     # ========================================================
-    # Mean Cross-Validation Accuracy
+    # Verify Complete 5-Fold CV
+    # ========================================================
+
+    if len(fold_accuracies) != n_splits:
+
+        return (
+            np.nan,
+            np.nan,
+            fold_accuracies,
+            fold_training_times,
+            "Failed",
+            None,
+            "Incomplete cross-validation."
+        )
+
+
+    # ========================================================
+    # Calculate Mean CV Accuracy
     # ========================================================
 
     mean_cv_accuracy = np.mean(
@@ -345,7 +657,7 @@ def cross_validate_method(
 
 
     # ========================================================
-    # Mean Training Time Across 5 Folds
+    # Calculate Mean Training Time
     # ========================================================
 
     mean_training_time = np.mean(
@@ -353,12 +665,17 @@ def cross_validate_method(
     )
 
 
+    # ========================================================
+    # Return Successful Results
+    # ========================================================
+
     return (
         mean_cv_accuracy,
         mean_training_time,
         fold_accuracies,
         fold_training_times,
         "Successful",
+        None,
         ""
     )
 
@@ -375,16 +692,29 @@ methods = [
     "powell"
 ]
 
+
 method_results = []
 
 
 print("\n" + "=" * 70)
-print("PARAMETER TUNING: OPTIMISATION METHOD")
+print(
+    "PARAMETER TUNING: OPTIMISATION METHOD"
+)
 print("=" * 70)
 
-print("\nUsing 5-fold cross-validation.")
-print("Primary metric: Mean Cross-Validation Accuracy")
-print("Secondary metric: Mean Training Time")
+
+print(
+    "\nUsing 5-fold cross-validation."
+)
+
+print(
+    "Primary metric: Mean Cross-Validation Accuracy"
+)
+
+print(
+    "Secondary metric: Mean Training Time"
+)
+
 print()
 
 
@@ -407,18 +737,19 @@ for method in methods:
         fold_accuracies,
         fold_training_times,
         status,
+        failed_fold,
         error_message
     ) = cross_validate_method(
         X_train_raw,
         y_train,
         method=method,
-        n_splits=5
+        n_splits=N_SPLITS
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # Successful Method
-    # --------------------------------------------------------
+    # ========================================================
 
     if status == "Successful":
 
@@ -430,6 +761,7 @@ for method in methods:
             ]
         )
 
+
         print(
             "    Fold Training Times:",
             [
@@ -438,10 +770,12 @@ for method in methods:
             ]
         )
 
+
         print(
             f"    Mean CV Accuracy: "
             f"{mean_cv_accuracy:.4f}"
         )
+
 
         print(
             f"    Mean Training Time: "
@@ -449,9 +783,9 @@ for method in methods:
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # Failed Method
-    # --------------------------------------------------------
+    # ========================================================
 
     else:
 
@@ -459,21 +793,43 @@ for method in methods:
             "\n    Mean CV Accuracy: FAILED"
         )
 
+
+        if failed_fold is not None:
+
+            print(
+                f"    Failed Fold: "
+                f"{failed_fold}"
+            )
+
+
         print(
-            f"    Reason: {error_message}"
+            f"    Reason: "
+            f"{error_message}"
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # Store Results
-    # --------------------------------------------------------
+    # ========================================================
 
     method_results.append({
+
         "method": method,
-        "mean_cv_accuracy": mean_cv_accuracy,
-        "mean_training_time": mean_training_time,
-        "status": status,
-        "error": error_message
+
+        "mean_cv_accuracy":
+            mean_cv_accuracy,
+
+        "mean_training_time":
+            mean_training_time,
+
+        "status":
+            status,
+
+        "failed_fold":
+            failed_fold,
+
+        "error":
+            error_message
     })
 
 
@@ -487,8 +843,11 @@ method_results_df = pd.DataFrame(
 
 
 print("\n" + "=" * 70)
-print("OPTIMISATION METHOD TUNING RESULTS")
+print(
+    "OPTIMISATION METHOD TUNING RESULTS"
+)
 print("=" * 70)
+
 
 print(
     method_results_df[
@@ -513,11 +872,16 @@ successful_results = method_results_df[
 ].copy()
 
 
+# ------------------------------------------------------------
+# Check That At Least One Method Succeeded
+# ------------------------------------------------------------
+
 if successful_results.empty:
 
     raise RuntimeError(
-        "All Optimisation methods failed during "
-        "cross-validation. No final model can be selected."
+        "All optimisation methods failed during "
+        "5-fold cross-validation. "
+        "No final model can be selected."
     )
 
 
@@ -530,32 +894,39 @@ plt.figure(
     figsize=(8, 5)
 )
 
+
 plt.bar(
     successful_results["method"],
     successful_results["mean_cv_accuracy"]
 )
 
+
 plt.xlabel(
     "Optimisation Method"
 )
 
+
 plt.ylabel(
     "Mean Cross-Validation Accuracy"
 )
+
 
 plt.title(
     "Ordinal Logistic Regression: "
     "Mean Cross-Validation Accuracy"
 )
 
+
 plt.ylim(
     0,
     1
 )
 
+
 plt.grid(
     axis="y"
 )
+
 
 plt.tight_layout()
 
@@ -571,27 +942,33 @@ plt.figure(
     figsize=(8, 5)
 )
 
+
 plt.bar(
     successful_results["method"],
     successful_results["mean_training_time"]
 )
 
+
 plt.xlabel(
     "Optimisation Method"
 )
 
+
 plt.ylabel(
     "Mean Training Time (seconds)"
 )
+
 
 plt.title(
     "Ordinal Logistic Regression: "
     "Mean Training Time Across 5 Folds"
 )
 
+
 plt.grid(
     axis="y"
 )
+
 
 plt.tight_layout()
 
@@ -608,13 +985,17 @@ plt.show()
 # ------------------------------------------------------------
 
 highest_accuracy = (
-    successful_results["mean_cv_accuracy"].max()
+    successful_results[
+        "mean_cv_accuracy"
+    ].max()
 )
 
 
 accuracy_tied_methods = successful_results[
     np.isclose(
-        successful_results["mean_cv_accuracy"],
+        successful_results[
+            "mean_cv_accuracy"
+        ],
         highest_accuracy,
         rtol=1e-9,
         atol=1e-9
@@ -630,13 +1011,17 @@ accuracy_tied_methods = successful_results[
 if len(accuracy_tied_methods) > 1:
 
     print("\n" + "=" * 70)
-    print("ACCURACY TIE DETECTED")
+    print(
+        "ACCURACY TIE DETECTED"
+    )
     print("=" * 70)
+
 
     print(
         f"{len(accuracy_tied_methods)} methods achieved "
         f"the same mean CV accuracy."
     )
+
 
     print(
         "Mean training time will be used as the "
@@ -644,30 +1029,42 @@ if len(accuracy_tied_methods) > 1:
     )
 
 
-    best_result = accuracy_tied_methods.loc[
-        accuracy_tied_methods[
-            "mean_training_time"
-        ].idxmin()
-    ]
+    best_result = (
+        accuracy_tied_methods.loc[
+            accuracy_tied_methods[
+                "mean_training_time"
+            ].idxmin()
+        ]
+    )
 
 
 else:
 
-    best_result = accuracy_tied_methods.iloc[0]
+    best_result = (
+        accuracy_tied_methods.iloc[0]
+    )
 
 
 # ============================================================
 # Store Best Method
 # ============================================================
 
-best_method = best_result["method"]
+best_method = best_result[
+    "method"
+]
+
 
 best_mean_cv_accuracy = float(
-    best_result["mean_cv_accuracy"]
+    best_result[
+        "mean_cv_accuracy"
+    ]
 )
 
+
 best_mean_training_time = float(
-    best_result["mean_training_time"]
+    best_result[
+        "mean_training_time"
+    ]
 )
 
 
@@ -676,18 +1073,23 @@ best_mean_training_time = float(
 # ============================================================
 
 print("\n" + "=" * 70)
-print("BEST OPTIMISATION METHOD")
+print(
+    "BEST OPTIMISATION METHOD"
+)
 print("=" * 70)
+
 
 print(
     f"Best Method: "
     f"{best_method}"
 )
 
+
 print(
     f"Mean CV Accuracy: "
     f"{best_mean_cv_accuracy:.4f}"
 )
+
 
 print(
     f"Mean Training Time: "
@@ -699,63 +1101,101 @@ print(
 # Prepare Full Training/Test Data
 # ============================================================
 
-X_train = prepare_features(
-    X_train_raw
+print("\n" + "=" * 70)
+print(
+    "PREPARING FULL TRAINING AND TEST DATA"
 )
-
-X_test = prepare_features(
-    X_test_raw
-)
+print("=" * 70)
 
 
-# ============================================================
-# Ensure Same Columns
-# ============================================================
+# ------------------------------------------------------------
+# Create Final Preprocessor
+# ------------------------------------------------------------
 
-X_test = X_test.reindex(
-    columns=X_train.columns,
-    fill_value=0
+final_preprocessor = (
+    create_preprocessor()
 )
 
 
-# ============================================================
-# Standardise Full Training/Test Data
-# ============================================================
+# ------------------------------------------------------------
+# Fit ONLY on Full Training Data
+# ------------------------------------------------------------
 
-scaler = StandardScaler()
-
-X_train_scaled = scaler.fit_transform(
-    X_train
+X_train_processed = (
+    final_preprocessor.fit_transform(
+        X_train_raw
+    )
 )
 
-X_test_scaled = scaler.transform(
-    X_test
-)
 
-joblib.dump(
-    scaler,
-    "saved_models/ordinal_logistic_scaler.pkl"
-)
-joblib.dump(
-    X_train.columns.tolist(),
-    "saved_models/ordinal_logistic_features.pkl"
+# ------------------------------------------------------------
+# Transform Test Data
+# ------------------------------------------------------------
+
+X_test_processed = (
+    final_preprocessor.transform(
+        X_test_raw
+    )
 )
 
 
 # ============================================================
-# Convert Back to DataFrame
+# Get Feature Names
 # ============================================================
 
-X_train_scaled = pd.DataFrame(
-    X_train_scaled,
-    columns=X_train.columns,
-    index=X_train.index
+final_feature_names = (
+    final_preprocessor
+    .get_feature_names_out()
 )
 
-X_test_scaled = pd.DataFrame(
-    X_test_scaled,
-    columns=X_train.columns,
-    index=X_test.index
+
+# ============================================================
+# Convert Processed Data to DataFrames
+# ============================================================
+
+X_train_processed = pd.DataFrame(
+    X_train_processed,
+    columns=final_feature_names,
+    index=X_train_raw.index
+)
+
+
+X_test_processed = pd.DataFrame(
+    X_test_processed,
+    columns=final_feature_names,
+    index=X_test_raw.index
+)
+
+
+# ============================================================
+# Convert Targets to Series
+# ============================================================
+
+y_train_series = pd.Series(
+    y_train,
+    index=X_train_raw.index
+)
+
+
+y_test_series = pd.Series(
+    y_test,
+    index=X_test_raw.index
+)
+
+
+# ============================================================
+# Display Processed Data Information
+# ============================================================
+
+print(
+    f"Original number of features: "
+    f"{X_train_raw.shape[1]}"
+)
+
+
+print(
+    f"Processed number of features: "
+    f"{X_train_processed.shape[1]}"
 )
 
 
@@ -764,8 +1204,8 @@ X_test_scaled = pd.DataFrame(
 # ============================================================
 
 model = OrderedModel(
-    endog=y_train,
-    exog=X_train_scaled,
+    endog=y_train_series,
+    exog=X_train_processed,
     distr="logit"
 )
 
@@ -775,11 +1215,14 @@ model = OrderedModel(
 # ============================================================
 
 print("\n" + "=" * 70)
-print("TRAINING FINAL ORDINAL LOGISTIC REGRESSION MODEL")
+print(
+    "TRAINING FINAL ORDINAL LOGISTIC REGRESSION MODEL"
+)
 print("=" * 70)
 
+
 print(
-    f"Selected optimization method: "
+    f"Selected optimisation method: "
     f"{best_method}"
 )
 
@@ -788,24 +1231,60 @@ print(
 # Start Training Timer
 # ------------------------------------------------------------
 
-training_start_time = time.perf_counter()
-
-
-# ------------------------------------------------------------
-# Train Final Model
-# ------------------------------------------------------------
-
-result = model.fit(
-    method=best_method,
-    disp=False
+training_start_time = (
+    time.perf_counter()
 )
+
+
+# ------------------------------------------------------------
+# Final Model Error Handling
+# ------------------------------------------------------------
+
+try:
+
+    result = model.fit(
+        method=best_method,
+        disp=False
+    )
+
+
+except Exception as e:
+
+    final_error = (
+        f"{type(e).__name__}: {str(e)}"
+    )
+
+
+    print(
+        "\nERROR: The selected optimisation method "
+        "failed while training the final model."
+    )
+
+
+    print(
+        f"Method: {best_method}"
+    )
+
+
+    print(
+        f"Reason: {final_error}"
+    )
+
+
+    raise RuntimeError(
+        "Final Ordinal Logistic Regression model "
+        "could not be trained using the selected "
+        f"optimisation method '{best_method}'."
+    ) from e
 
 
 # ------------------------------------------------------------
 # End Training Timer
 # ------------------------------------------------------------
 
-training_end_time = time.perf_counter()
+training_end_time = (
+    time.perf_counter()
+)
 
 
 # ------------------------------------------------------------
@@ -819,12 +1298,62 @@ training_time = (
 
 
 # ============================================================
+# Save Final Model
+# ============================================================
+
+result.save(
+    FINAL_MODEL_PATH
+)
+
+
+# ============================================================
+# Save Final Preprocessor
+# ============================================================
+
+joblib.dump(
+    final_preprocessor,
+    PREPROCESSOR_PATH
+)
+
+
+# ============================================================
+# Save Feature Names
+# ============================================================
+
+joblib.dump(
+    list(final_feature_names),
+    FEATURES_PATH
+)
+
+
+print(
+    f"\nFinal model saved to: "
+    f"{FINAL_MODEL_PATH}"
+)
+
+
+print(
+    f"Preprocessor saved to: "
+    f"{PREPROCESSOR_PATH}"
+)
+
+
+print(
+    f"Feature names saved to: "
+    f"{FEATURES_PATH}"
+)
+
+
+# ============================================================
 # Display Model Summary
 # ============================================================
 
 print("\n" + "=" * 70)
-print("ORDINAL LOGISTIC REGRESSION MODEL")
+print(
+    "ORDINAL LOGISTIC REGRESSION MODEL"
+)
 print("=" * 70)
+
 
 # Uncomment if model summary is required.
 # print(result.summary())
@@ -834,9 +1363,11 @@ print("=" * 70)
 # Predict Probabilities
 # ============================================================
 
-predicted_probabilities = result.model.predict(
-    result.params,
-    exog=X_test_scaled
+predicted_probabilities = (
+    result.model.predict(
+        result.params,
+        exog=X_test_processed
+    )
 )
 
 
@@ -844,12 +1375,11 @@ predicted_probabilities = result.model.predict(
 # Predict Final Class
 # ============================================================
 
-# Select the class with the highest predicted probability.
-
 y_pred = np.argmax(
     predicted_probabilities,
     axis=1
 )
+
 
 y_pred = y_pred.astype(int)
 
@@ -859,29 +1389,35 @@ y_pred = y_pred.astype(int)
 # ============================================================
 
 accuracy = accuracy_score(
-    y_test,
+    y_test_series,
     y_pred
 )
 
 
 print("\n" + "=" * 70)
-print("FINAL MODEL PERFORMANCE")
+print(
+    "FINAL MODEL PERFORMANCE"
+)
 print("=" * 70)
+
 
 print(
     f"Selected Method: "
     f"{best_method}"
 )
 
+
 print(
     f"Mean CV Accuracy: "
     f"{best_mean_cv_accuracy:.4f}"
 )
 
+
 print(
     f"Test Accuracy: "
     f"{accuracy:.4f}"
 )
+
 
 print(
     f"Final Model Training Time: "
@@ -893,21 +1429,27 @@ print(
 # Classification Report
 # ============================================================
 
-print("\nClassification Report:")
+class_names = [
+    "Insufficient Weight",
+    "Normal Weight",
+    "Overweight Level I",
+    "Overweight Level II",
+    "Obesity Type I",
+    "Obesity Type II",
+    "Obesity Type III"
+]
+
+
+print(
+    "\nClassification Report:"
+)
+
 
 print(
     classification_report(
-        y_test,
+        y_test_series,
         y_pred,
-        target_names=[
-            "Insufficient Weight",
-            "Normal Weight",
-            "Overweight Level I",
-            "Overweight Level II",
-            "Obesity Type I",
-            "Obesity Type II",
-            "Obesity Type III"
-        ],
+        target_names=class_names,
         zero_division=0
     )
 )
@@ -918,19 +1460,26 @@ print(
 # ============================================================
 
 cm = confusion_matrix(
-    y_test,
+    y_test_series,
     y_pred
 )
 
-print("\nConfusion Matrix:")
-print(cm)
+
+print(
+    "\nConfusion Matrix:"
+)
+
+
+print(
+    cm
+)
 
 
 # ============================================================
 # Display Example Predictions
 # ============================================================
 
-class_names = {
+class_names_dict = {
     0: "Insufficient Weight",
     1: "Normal Weight",
     2: "Overweight Level I",
@@ -942,17 +1491,20 @@ class_names = {
 
 
 print("\n" + "=" * 70)
-print("EXAMPLE PREDICTIONS")
+print(
+    "EXAMPLE PREDICTIONS"
+)
 print("=" * 70)
 
 
 for i in range(
-    min(10, len(y_test))
+    min(10, len(y_test_series))
 ):
 
     actual_class = int(
-        y_test.iloc[i]
+        y_test_series.iloc[i]
     )
+
 
     predicted_class = int(
         y_pred[i]
@@ -961,21 +1513,26 @@ for i in range(
 
     print(
         f"\nActual:    "
-        f"{class_names[actual_class]}"
+        f"{class_names_dict[actual_class]}"
         f"\nPredicted: "
-        f"{class_names[predicted_class]}"
+        f"{class_names_dict[predicted_class]}"
     )
 
 
-    print("Probabilities:")
+    print(
+        "Probabilities:"
+    )
 
 
-    for class_index, probability in enumerate(
+    for (
+        class_index,
+        probability
+    ) in enumerate(
         predicted_probabilities[i]
     ):
 
         print(
             f"  "
-            f"{class_names[class_index]:25s}: "
+            f"{class_names_dict[class_index]:25s}: "
             f"{probability:.4f}"
         )

@@ -27,7 +27,7 @@ from Preprocessing import (
 
 
 # ============================================================
-# Load Saved Model
+# File Paths
 # ============================================================
 
 model_path = (
@@ -35,74 +35,142 @@ model_path = (
     "ordinal_logistic_regression.pkl"
 )
 
-result = OrderedResults.load(
-    model_path
-)
-
-
-# ============================================================
-# Load Saved Scaler
-# ============================================================
-
-scaler_path = (
+preprocessor_path = (
     "saved_models/"
-    "ordinal_logistic_scaler.pkl"
-)
-
-scaler = joblib.load(
-    scaler_path
+    "ordinal_logistic_preprocessor.pkl"
 )
 
 
 # ============================================================
-# Load Saved Feature Columns
+# Load Saved Model
 # ============================================================
 
-features_path = (
-    "saved_models/"
-    "ordinal_logistic_features.pkl"
-)
+print("\n" + "=" * 70)
+print("LOADING ORDINAL LOGISTIC REGRESSION MODEL")
+print("=" * 70)
 
-feature_columns = joblib.load(
-    features_path
-)
+try:
+
+    result = OrderedResults.load(
+        model_path
+    )
+
+    print(
+        f"Model loaded successfully from:\n"
+        f"{model_path}"
+    )
+
+except Exception as e:
+
+    raise RuntimeError(
+        f"Failed to load the Ordinal Logistic Regression model.\n"
+        f"Path: {model_path}\n"
+        f"Error: {type(e).__name__}: {str(e)}"
+    )
+
+
+# ============================================================
+# Load Saved Preprocessor
+# ============================================================
+
+print("\n" + "-" * 70)
+print("LOADING SAVED PREPROCESSOR")
+print("-" * 70)
+
+try:
+
+    preprocessor = joblib.load(
+        preprocessor_path
+    )
+
+    print(
+        f"Preprocessor loaded successfully from:\n"
+        f"{preprocessor_path}"
+    )
+
+except Exception as e:
+
+    raise RuntimeError(
+        f"Failed to load the saved preprocessing pipeline.\n"
+        f"Path: {preprocessor_path}\n"
+        f"Error: {type(e).__name__}: {str(e)}"
+    )
 
 
 # ============================================================
 # Prepare Test Features
 # ============================================================
 
-X_test = X_test.copy()
+print("\n" + "-" * 70)
+print("PREPARING TEST DATA")
+print("-" * 70)
 
-X_test = pd.get_dummies(
-    X_test,
-    columns=["MTRANS"],
-    prefix="MTRANS",
-    dtype=int
-)
+try:
+
+    X_test = X_test.copy()
+
+    # --------------------------------------------------------
+    # Apply the SAME fitted preprocessing used during training
+    # --------------------------------------------------------
+    #
+    # This performs:
+    #
+    # Binary variables
+    #     -> OrdinalEncoder
+    #
+    # CAEC / CALC
+    #     -> OrdinalEncoder
+    #
+    # MTRANS
+    #     -> OneHotEncoder
+    #
+    # Numerical variables
+    #     -> StandardScaler
+    #
+    # The preprocessor was fitted ONLY on the training data.
+    #
+
+    X_test_processed = preprocessor.transform(
+        X_test
+    )
+
+    print(
+        "Test data preprocessing completed successfully."
+    )
+
+except Exception as e:
+
+    raise RuntimeError(
+        f"Failed to preprocess the test data.\n"
+        f"Error: {type(e).__name__}: {str(e)}"
+    )
 
 
 # ============================================================
-# Ensure Same Feature Columns as Training Data
+# Convert Processed Test Data to DataFrame
 # ============================================================
 
-X_test = X_test.reindex(
-    columns=feature_columns,
-    fill_value=0
-)
+try:
+
+    # Obtain transformed feature names if supported
+    feature_names = (
+        preprocessor.get_feature_names_out()
+    )
+
+except Exception:
+
+    # Fallback if feature names cannot be obtained
+    feature_names = [
+        f"Feature_{i}"
+        for i in range(
+            X_test_processed.shape[1]
+        )
+    ]
 
 
-# ============================================================
-# Standardise Test Data
-# ============================================================
-
-X_test_scaled = scaler.transform(
-    X_test
-)
-
-X_test_scaled = pd.DataFrame(
-    X_test_scaled,
-    columns=feature_columns,
+X_test_processed = pd.DataFrame(
+    X_test_processed,
+    columns=feature_names,
     index=X_test.index
 )
 
@@ -111,24 +179,45 @@ X_test_scaled = pd.DataFrame(
 # Prepare Target
 # ============================================================
 
-y_test = y_test.astype(int)
+y_test = np.asarray(
+    y_test
+).astype(int)
 
 
 # ============================================================
 # Generate Predicted Probabilities
 # ============================================================
 
-predicted_probabilities = (
-    result.model.predict(
-        result.params,
-        exog=X_test_scaled
+print("\n" + "-" * 70)
+print("GENERATING PREDICTIONS")
+print("-" * 70)
+
+try:
+
+    predicted_probabilities = (
+        result.model.predict(
+            result.params,
+            exog=X_test_processed
+        )
     )
-)
+
+    print(
+        "Predicted probabilities generated successfully."
+    )
+
+except Exception as e:
+
+    raise RuntimeError(
+        f"Failed to generate model predictions.\n"
+        f"Error: {type(e).__name__}: {str(e)}"
+    )
 
 
 # ============================================================
 # Generate Predicted Classes
 # ============================================================
+
+# Select the class with the highest predicted probability.
 
 y_pred = np.argmax(
     predicted_probabilities,
@@ -183,12 +272,30 @@ f1 = f1_score(
     zero_division=0
 )
 
-roc_auc = roc_auc_score(
-    y_test,
-    predicted_probabilities,
-    multi_class="ovr",
-    average="weighted"
-)
+
+# ============================================================
+# ROC-AUC
+# ============================================================
+
+try:
+
+    roc_auc = roc_auc_score(
+        y_test,
+        predicted_probabilities,
+        multi_class="ovr",
+        average="weighted"
+    )
+
+    roc_auc_status = "Successful"
+
+except Exception as e:
+
+    roc_auc = np.nan
+
+    roc_auc_status = (
+        f"Failed: "
+        f"{type(e).__name__}: {str(e)}"
+    )
 
 
 # ============================================================
@@ -202,6 +309,11 @@ print("=" * 70)
 print("\nSaved Model:")
 print(
     model_path
+)
+
+print("\nSaved Preprocessor:")
+print(
+    preprocessor_path
 )
 
 print("\n" + "-" * 70)
@@ -224,9 +336,21 @@ print(
     f"F1-Score:  {f1:.4f}"
 )
 
-print(
-    f"ROC-AUC:   {roc_auc:.4f}"
-)
+if not np.isnan(roc_auc):
+
+    print(
+        f"ROC-AUC:   {roc_auc:.4f}"
+    )
+
+else:
+
+    print(
+        f"ROC-AUC:   FAILED"
+    )
+
+    print(
+        f"Reason:    {roc_auc_status}"
+    )
 
 
 # ============================================================
@@ -236,7 +360,11 @@ print(
 cm = confusion_matrix(
     y_test,
     y_pred,
-    labels=list(range(len(class_names)))
+    labels=list(
+        range(
+            len(class_names)
+        )
+    )
 )
 
 
@@ -285,14 +413,18 @@ plt.colorbar()
 # ============================================================
 
 plt.xticks(
-    np.arange(len(class_names)),
+    np.arange(
+        len(class_names)
+    ),
     class_names,
     rotation=45,
     ha="right"
 )
 
 plt.yticks(
-    np.arange(len(class_names)),
+    np.arange(
+        len(class_names)
+    ),
     class_names
 )
 
@@ -434,7 +566,21 @@ print(
     classification_report(
         y_test,
         y_pred,
+        labels=list(
+            range(
+                len(class_names)
+            )
+        ),
         target_names=class_names,
         zero_division=0
     )
 )
+
+
+# ============================================================
+# Evaluation Complete
+# ============================================================
+
+print("\n" + "=" * 70)
+print("EVALUATION COMPLETE")
+print("=" * 70)
