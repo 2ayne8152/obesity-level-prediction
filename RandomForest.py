@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.tree import plot_tree
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
@@ -39,6 +39,47 @@ BEST_PARAMS = {
 }
 
 # --------------------------------------------------------------------------
+# SEVERITY-ORDERED TARGET ENCODER
+# --------------------------------------------------------------------------
+# LabelEncoder sorts classes alphabetically, which puts Obesity types before
+# Overweight levels — medically wrong ordering. SeverityOrderedTargetEncoder
+# forces the correct low-to-high severity sequence, matching LogisticRegression.py
+# and XGBoost.py (which already uses severity order via its manual mapping).
+# Tree-based models don't use label order for splitting, so accuracy is
+# unaffected — only the class labels in the report/confusion matrix change
+# from alphabetical to severity order, consistent across all three scripts.
+SEVERITY_ORDER = [
+    "Insufficient_Weight",
+    "Normal_Weight",
+    "Overweight_Level_I",
+    "Overweight_Level_II",
+    "Obesity_Type_I",
+    "Obesity_Type_II",
+    "Obesity_Type_III",
+]
+
+class SeverityOrderedTargetEncoder:
+    """Encodes the target in explicit obesity-severity order rather than
+    alphabetically. Exposes the same .classes_ / .fit_transform() /
+    .inverse_transform() interface as LabelEncoder so nothing else in
+    the script needs to change."""
+
+    def __init__(self, categories):
+        self.classes_ = np.array(categories)
+        self._to_code = {c: i for i, c in enumerate(categories)}
+        self._to_label = {i: c for i, c in enumerate(categories)}
+
+    def fit_transform(self, y):
+        return np.array([self._to_code[v] for v in y])
+
+    def transform(self, y):
+        return np.array([self._to_code[v] for v in y])
+
+    def inverse_transform(self, y):
+        return np.array([self._to_label[int(i)] for i in y])
+
+
+# --------------------------------------------------------------------------
 # 1. LOAD DATA
 # --------------------------------------------------------------------------
 def load_data():
@@ -58,8 +99,9 @@ nominal_cols = ["CAEC", "CALC", "MTRANS"]
 numeric_cols = ["Age", "Height", "Weight", "FCVC", "NCP", "CH2O", "FAF", "TUE"]
 categorical_cols = binary_cols + nominal_cols
 
-# Encode target labels (7 obesity classes -> integers)
-target_encoder = LabelEncoder()
+# Encode target labels in explicit severity order (consistent with
+# LogisticRegression.py and XGBoost.py)
+target_encoder = SeverityOrderedTargetEncoder(SEVERITY_ORDER)
 y_encoded = target_encoder.fit_transform(y)
 
 # ColumnTransformer: one-hot encode categoricals, standardscaler for numeric
@@ -111,7 +153,7 @@ print(classification_report(y_test, final_preds, target_names=target_encoder.cla
 
 # Ensure output directories exist
 os.makedirs("results/graphs", exist_ok=True)
-os.makedirs("saved_model", exist_ok=True)
+os.makedirs("pkl", exist_ok=True)
 
 # Generate Confusion Matrix
 cm = confusion_matrix(y_test, final_preds)
@@ -124,7 +166,7 @@ plt.savefig("results/graphs/rf_confusion_matrix.png", dpi=150)
 plt.close()
 
 # ==========================================================================
-# 4.5. SAMPLE DECISION TREE GRAPH (ADD THIS NEW SECTION HERE)
+# 4.5. SAMPLE DECISION TREE GRAPH
 # ==========================================================================
 print("\nGenerating sample decision tree graph...")
 

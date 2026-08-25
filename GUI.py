@@ -8,7 +8,7 @@ physical-condition features through sliders (numeric) and dropdowns
   - XGBoost       (trained in `xgboost_obesity_best_params.py`)
                   pkl/xgboost_obesity_model.pkl + pkl/target_label_encoder.pkl
   - Random Forest (trained in `RandomForest.py`)
-                  saved_model/random_forest_model.pkl + saved_model/rf_target_encoder.pkl
+                  pkl/random_forest_model.pkl + pkl/rf_target_encoder.pkl
 
 A model selector at the top of the page lets the user switch between them;
 predictions, probabilities, and the prediction chart update accordingly.
@@ -20,8 +20,8 @@ Expects the following files to exist relative to where you launch the app
 (same paths each training script saves to):
     pkl/xgboost_obesity_model.pkl
     pkl/target_label_encoder.pkl
-    saved_model/random_forest_model.pkl
-    saved_model/rf_target_encoder.pkl
+    pkl/random_forest_model.pkl
+    pkl/rf_target_encoder.pkl
 """
 
 import joblib
@@ -44,6 +44,11 @@ MODELS = {
         "model_path": "pkl/random_forest_model.pkl",
         "encoder_path": "pkl/rf_target_encoder.pkl",
         "display_name": "tuned Random Forest model",
+    },
+    "Ordinal Logistic Regression": {
+        "model_path": "pkl/ordinal_logistic_regression_model.pkl",
+        "encoder_path": "pkl/ordinal_logistic_target_encoder.pkl",
+        "display_name": "Ordinal Logistic Regression model",
     },
 }
 
