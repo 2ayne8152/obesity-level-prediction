@@ -25,6 +25,22 @@ model-tuning step from LRModelTuning.py (CV comparison across optimisation
 methods, per-fold failure handling, method-comparison bar charts) is
 inserted in place of the fixed ORDINAL_PARAMS["method"] = "bfgs" choice.
 
+NOTE ON OrderedLogisticClassifier:
+This script does NOT redefine OrderedLogisticClassifier locally — it is
+imported from LogisticRegression.py instead. This matters for pickling:
+joblib/pickle stores a reference to the class's *module of origin*, so if
+the class were defined here (in __main__ when this script is run
+directly), any other script (like GUI.py) that tries to joblib.load(...)
+the saved model would fail with something like:
+    ModuleNotFoundError: No module named '...'
+    AttributeError: Can't get attribute 'OrderedLogisticClassifier' on <module '__main__' ...>
+By importing the class from LogisticRegression.py here, and importing it
+the same way in GUI.py, every script that loads this pickle resolves the
+class the same way. IMPORTANT: LogisticRegression.py's own top-level
+script code (data loading, training, plotting, etc.) must be wrapped in
+`if __name__ == "__main__":` so that merely importing the class from it
+does not re-run its entire training pipeline as a side effect.
+
 See the "DIFFERENCES FROM THE ORIGINAL SCRIPTS" note at the bottom of this
 file for a full list of what changed and why.
 
@@ -41,7 +57,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
 
-from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import (
     learning_curve,
     train_test_split,
@@ -56,9 +71,15 @@ from sklearn.metrics import (
     confusion_matrix,
     ConfusionMatrixDisplay,
     roc_auc_score,
+    precision_recall_fscore_support,
 )
 
 from statsmodels.miscmodels.ordinal_model import OrderedModel
+
+# OrderedLogisticClassifier now lives in LogisticRegression.py — imported
+# here rather than redefined, so every script that loads a pickled model
+# built with this class resolves it from the same place.
+from LogisticRegression import OrderedLogisticClassifier
 
 RANDOM_STATE = 42
 N_SPLITS = 5
@@ -69,45 +90,6 @@ CANDIDATE_METHODS = ["bfgs", "lbfgs", "newton", "nm", "powell"]
 # Output directories (created up front so both scripts' save paths work)
 for directory in ["image", "pkl", "tuning result"]:
     os.makedirs(directory, exist_ok=True)
-
-
-# --------------------------------------------------------------------------
-# 0. SCIKIT-LEARN WRAPPER FOR statsmodels' OrderedModel
-# --------------------------------------------------------------------------
-# OrderedModel doesn't implement the sklearn estimator interface, so it
-# can't be dropped into a Pipeline or sklearn's learning_curve() as-is.
-# This thin wrapper gives it fit / predict / predict_proba so the rest of
-# this script can use the same Pipeline machinery for the final model.
-class OrderedLogisticClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, distr="logit", method="bfgs", maxiter=500, disp=False):
-        self.distr = distr
-        self.method = method
-        self.maxiter = maxiter
-        self.disp = disp
-
-    def fit(self, X, y):
-        X = np.asarray(X)
-        y = np.asarray(y)
-        self.classes_ = np.unique(y)
-        self.model_ = OrderedModel(y, X, distr=self.distr)
-        self.result_ = self.model_.fit(
-            method=self.method, maxiter=self.maxiter, disp=self.disp
-        )
-        return self
-
-    def predict_proba(self, X):
-        X = np.asarray(X)
-        return self.result_.model.predict(self.result_.params, exog=X)
-
-    def predict(self, X):
-        probs = self.predict_proba(X)
-        return self.classes_[np.argmax(probs, axis=1)]
-
-    @property
-    def coef_(self):
-        # params = [feature coefficients..., threshold cutoffs...]
-        n_features = self.model_.exog.shape[1]
-        return self.result_.params[:n_features]
 
 
 # --------------------------------------------------------------------------
@@ -442,6 +424,32 @@ plt.close()
 print("\nSaved image/confusion_matrix_ordinal_logreg.png")
 
 # --------------------------------------------------------------------------
+# 6b. SUMMARY METRICS TABLE (Accuracy, Precision, Recall, F1-Score, ROC-AUC)
+# --------------------------------------------------------------------------
+precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
+    y_test, final_preds, average="macro", zero_division=0
+)
+precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+    y_test, final_preds, average="weighted", zero_division=0
+)
+
+summary_metrics_df = pd.DataFrame(
+    {
+        "Metric": ["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"],
+        "Macro":    [final_acc, precision_macro,    recall_macro,    f1_macro,    macro_roc_auc],
+        "Weighted": [final_acc, precision_weighted, recall_weighted, f1_weighted, weighted_roc_auc],
+    }
+)
+
+print("\n" + "=" * 70)
+print("SUMMARY METRICS")
+print("=" * 70)
+print(summary_metrics_df.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
+
+summary_metrics_df.to_csv("tuning result/summary_metrics_ordinal_logreg.csv", index=False)
+print("\nSaved tuning result/summary_metrics_ordinal_logreg.csv")
+
+# --------------------------------------------------------------------------
 # 7. FEATURE IMPORTANCE
 # --------------------------------------------------------------------------
 ohe = best_model.named_steps["preprocessor"].named_transformers_["nom"]
@@ -524,6 +532,7 @@ for i in range(min(10, len(y_test))):
 # --------------------------------------------------------------------------
 # Example: how to load and use the saved model later
 # --------------------------------------------------------------------------
+# from LogisticRegression import OrderedLogisticClassifier  # noqa: F401
 # best_model = joblib.load("pkl/ordinal_logistic_regression_model.pkl")
 # target_encoder = joblib.load("pkl/ordinal_logistic_target_encoder.pkl")
 # preds = best_model.predict(new_data_df)
@@ -545,10 +554,17 @@ for i in range(min(10, len(y_test))):
 #   - Category lists (binary_categories / ordinal_categories) became dicts
 #     keyed by column name rather than plain lists, so create_preprocessor()
 #     can rebuild the right category order regardless of column filtering.
-#   - Added an "EXAMPLE PREDICTIONS" section (see below) and method-
-#     comparison bar charts, both new outputs not present in the original.
+#   - Added an "EXAMPLE PREDICTIONS" section, method-comparison bar charts,
+#     and a consolidated Accuracy/Precision/Recall/F1/ROC-AUC summary table
+#     (section 6b) — none present in the original.
 #   - Confusion-matrix / feature-importance / learning-curve plot titles
 #     now report which optimisation method was actually used.
+#   - OrderedLogisticClassifier is now IMPORTED from LogisticRegression.py
+#     rather than defined locally, so pickled models resolve the class
+#     consistently regardless of which script loads them (see the module
+#     docstring note above). LogisticRegression.py's own script body must
+#     be wrapped in `if __name__ == "__main__":` for this import to be
+#     side-effect-free.
 #
 # vs. LRModelTuning.py (source of the tuning logic):
 #   - Data loading is self-contained again (ucimlrepo fetch with local-CSV
@@ -560,9 +576,10 @@ for i in range(min(10, len(y_test))):
 #     calling OrderedModel/`result.fit()` directly — this is what lets the
 #     same final model be reused for `learning_curve()` in section 9,
 #     which LRModelTuning.py did not compute at all.
-#   - ROC-AUC (macro, weighted, and per-class) was added to the test-set
-#     evaluation; LRModelTuning.py only reported accuracy, a classification
-#     report and a confusion matrix.
+#   - ROC-AUC (macro, weighted, and per-class) and a full summary metrics
+#     table (Accuracy/Precision/Recall/F1/ROC-AUC) were added to the
+#     test-set evaluation; LRModelTuning.py only reported accuracy, a
+#     classification report and a confusion matrix.
 #   - Artifact saving is simplified: one joblib dump of the whole fitted
 #     Pipeline (preprocessor + classifier together) plus the target
 #     encoder, instead of three separate artifacts (statsmodels
