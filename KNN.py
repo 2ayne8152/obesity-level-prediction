@@ -1,12 +1,12 @@
 """
-XGBoost Classifier — Estimation of Obesity Levels Based on Eating Habits
+KNN Classifier — Estimation of Obesity Levels Based on Eating Habits
 and Physical Condition (UCI ML Repository, dataset id 544)
 DOI: https://doi.org/10.24432/C5H31Z
 
-This version runs XGBoost directly with the best hyperparameters found
-previously via RandomizedSearchCV (no re-tuning, no baseline run).
+This version runs KNN directly with the best hyperparameters found
+previously via tuning (no re-tuning, no baseline run).
 
-Preprocessing is shared with LogisticRegression.py:
+Preprocessing is shared with XGBoost.py / LogisticRegression.py:
   - binary_cols:  2-category columns -> single 0/1 column (OrdinalEncoder)
   - ordinal_cols: genuinely ORDERED categories (CAEC/CALC) -> single integer
                   column, in their real-world order (OrdinalEncoder)
@@ -17,48 +17,53 @@ Preprocessing is shared with LogisticRegression.py:
 Pipeline:
   1. Load data (via ucimlrepo, with a CSV fallback)
   2. Preprocessing (encode categoricals, encode target, train/test split)
-  3. Fit XGBoost with best-known hyperparameters
-  4. Evaluation (accuracy, classification report, ROC-AUC, confusion matrix, feature importance)
-  5. Learning curve
+  3. Fit KNN with best-known hyperparameters
+  4. Evaluation (accuracy, precision, recall, F1, ROC-AUC, classification
+     report, confusion matrix, timing)
+  5. Save the final model
 
 Install requirements:
-    pip install ucimlrepo xgboost scikit-learn pandas numpy matplotlib seaborn
+    pip install ucimlrepo scikit-learn pandas numpy matplotlib seaborn
 """
+
+import os
+import time
+import warnings
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.model_selection import learning_curve, train_test_split
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, OrdinalEncoder, StandardScaler, label_binarize
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
     accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
     classification_report,
     confusion_matrix,
     ConfusionMatrixDisplay,
     roc_auc_score,
 )
+from sklearn.neighbors import KNeighborsClassifier
+import joblib
 
-from xgboost import XGBClassifier
+warnings.filterwarnings("ignore")
 
 RANDOM_STATE = 42
 
 # --------------------------------------------------------------------------
-# BEST HYPERPARAMETERS (found previously via RandomizedSearchCV)
+# BEST HYPERPARAMETERS (found previously via tuning)
 # --------------------------------------------------------------------------
 BEST_PARAMS = {
-    "subsample": 1.0,
-    "reg_lambda": 1,
-    "reg_alpha": 0,
-    "n_estimators": 600,
-    "min_child_weight": 1,
-    "max_depth": 5,
-    "learning_rate": 0.02,
-    "gamma": 0.3,
-    "colsample_bytree": 0.7,
+    "n_neighbors": 5,
+    "weights": "distance",
+    "metric": "manhattan",
+    "p": 1,
 }
 
 # --------------------------------------------------------------------------
@@ -112,9 +117,8 @@ binary_categories = binary_categories[: len(binary_cols)]
 ordinal_categories = [["no", "Sometimes", "Frequently", "Always"]] * len(ordinal_cols)
 
 # Encode target labels in their natural CLINICAL order (kept consistent with
-# LogisticRegression.py, even though XGBoost itself doesn't require an
-# ordered target — this keeps class_names/report ordering identical across
-# both scripts for easy side-by-side comparison).
+# XGBoost.py / LogisticRegression.py, so class_names/report ordering is
+# identical across all scripts for easy side-by-side comparison).
 class_order = [
     "Insufficient_Weight",
     "Normal_Weight",
@@ -132,7 +136,7 @@ print("\nClasses (in ordinal order):", list(target_encoder.classes_))
 
 # ColumnTransformer: ordinal-encode binary/ordinal columns, one-hot encode
 # only the genuinely nominal column (MTRANS, drop="first"), and scale
-# numeric columns. Same preprocessing as LogisticRegression.py.
+# numeric columns. Same preprocessing as XGBoost.py / LogisticRegression.py.
 preprocessor = ColumnTransformer(
     transformers=[
         ("bin", OrdinalEncoder(categories=binary_categories), binary_cols),
@@ -152,20 +156,14 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # --------------------------------------------------------------------------
-# 3. FIT XGBOOST WITH BEST-KNOWN HYPERPARAMETERS
+# 3. FIT KNN WITH BEST-KNOWN HYPERPARAMETERS
 # --------------------------------------------------------------------------
-n_classes = len(np.unique(y_encoded))
-
 best_model = Pipeline(
     steps=[
         ("preprocessor", preprocessor),
         (
             "classifier",
-            XGBClassifier(
-                objective="multi:softprob",
-                num_class=n_classes,
-                eval_metric="mlogloss",
-                random_state=RANDOM_STATE,
+            KNeighborsClassifier(
                 n_jobs=-1,
                 **BEST_PARAMS,
             ),
@@ -173,15 +171,23 @@ best_model = Pipeline(
     ]
 )
 
-print("\nFitting XGBoost with best-known hyperparameters...")
+print("\nFitting KNN with best-known hyperparameters...")
+train_start = time.time()
 best_model.fit(X_train, y_train)
+training_time = time.time() - train_start
 
 # --------------------------------------------------------------------------
 # 4. EVALUATION ON TEST SET
 # --------------------------------------------------------------------------
+run_start = time.time()
 final_preds = best_model.predict(X_test)
+final_probs = best_model.predict_proba(X_test)
+run_time = time.time() - run_start
+
 final_acc = accuracy_score(y_test, final_preds)
 print(f"\nTest accuracy: {final_acc:.4f}")
+print(f"Model training time:  {training_time:.5f} seconds")
+print(f"Model inference time: {run_time:.5f} seconds")
 
 print("\nClassification report:\n")
 print(
@@ -193,17 +199,11 @@ print(
 # --------------------------------------------------------------------------
 # ROC-AUC (multiclass, one-vs-rest)
 # --------------------------------------------------------------------------
-final_probs = best_model.predict_proba(X_test)
+y_test_bin = label_binarize(y_test, classes=np.unique(y_train))
 
-macro_roc_auc = roc_auc_score(
-    y_test, final_probs, multi_class="ovr", average="macro"
-)
-weighted_roc_auc = roc_auc_score(
-    y_test, final_probs, multi_class="ovr", average="weighted"
-)
-per_class_roc_auc = roc_auc_score(
-    y_test, final_probs, multi_class="ovr", average=None
-)
+macro_roc_auc = roc_auc_score(y_test_bin, final_probs, multi_class="ovr", average="macro")
+weighted_roc_auc = roc_auc_score(y_test_bin, final_probs, multi_class="ovr", average="weighted")
+per_class_roc_auc = roc_auc_score(y_test_bin, final_probs, multi_class="ovr", average=None)
 
 print(f"\nMacro-average ROC-AUC (OvR): {macro_roc_auc:.4f}")
 print(f"Weighted-average ROC-AUC (OvR): {weighted_roc_auc:.4f}")
@@ -218,105 +218,45 @@ roc_auc_df = pd.DataFrame(
 print("\nPer-class ROC-AUC (OvR):")
 print(roc_auc_df.to_string(index=False))
 
+# Weighted precision/recall/F1, for a report-table summary line
+precision = precision_score(y_test, final_preds, average="weighted")
+recall = recall_score(y_test, final_preds, average="weighted")
+f1 = f1_score(y_test, final_preds, average="weighted")
+
+print("\nSummary metrics:")
+print(f"Accuracy:  {final_acc * 100:.2f}%")
+print(f"Precision: {precision * 100:.2f}%")
+print(f"Recall:    {recall * 100:.2f}%")
+print(f"F1-Score:  {f1 * 100:.2f}%")
+print(f"ROC-AUC:   {weighted_roc_auc * 100:.2f}%")
+
+# Ensure output directories exist
+os.makedirs("results/graphs", exist_ok=True)
+os.makedirs("pkl", exist_ok=True)
+
 # Confusion matrix
 cm = confusion_matrix(y_test, final_preds)
 fig, ax = plt.subplots(figsize=(9, 8))
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=target_encoder.classes_)
 disp.plot(ax=ax, xticks_rotation=45, cmap="Blues", colorbar=False)
-plt.title("Confusion Matrix — XGBoost (Best Params)")
+plt.title("Confusion Matrix — KNN (Best Params)")
 plt.tight_layout()
-plt.savefig("image/confusion_matrix.png", dpi=150)
+plt.savefig("results/graphs/knn_confusion_matrix.png", dpi=150)
 plt.close()
-print("\nSaved image/confusion_matrix.png")
+print("\nSaved results/graphs/knn_confusion_matrix.png")
 
 # --------------------------------------------------------------------------
-# 5. FEATURE IMPORTANCE
+# 5. SAVE THE FINAL MODEL
 # --------------------------------------------------------------------------
-# Recover feature names in the same order ColumnTransformer concatenates them
-ohe = best_model.named_steps["preprocessor"].named_transformers_["nom"]
-nom_feature_names = list(ohe.get_feature_names_out(nominal_cols))
-all_feature_names = binary_cols + ordinal_cols + nom_feature_names + numeric_cols
-
-importances = best_model.named_steps["classifier"].feature_importances_
-feat_imp = (
-    pd.Series(importances, index=all_feature_names)
-    .sort_values(ascending=False)
-    .head(20)
-)
-
-plt.figure(figsize=(8, 8))
-sns.barplot(x=feat_imp.values, y=feat_imp.index, color="steelblue")
-plt.title("Top 20 Feature Importances — XGBoost (Best Params)")
-plt.xlabel("Importance")
-plt.tight_layout()
-plt.savefig("image/feature_importance.png", dpi=150)
-plt.close()
-print("Saved image/feature_importance.png")
-
-# --------------------------------------------------------------------------
-# 6. SAVE THE FINAL MODEL
-# --------------------------------------------------------------------------
-import joblib
-
-joblib.dump(best_model, "pkl/xgboost_obesity_model.pkl")
-joblib.dump(target_encoder, "pkl/target_label_encoder.pkl")
-print("\nSaved trained pipeline to pkl/xgboost_obesity_model.pkl")
-print("Saved target label encoder to pkl/target_label_encoder.pkl")
-
-# --------------------------------------------------------------------------
-# LEARNING CURVE
-# --------------------------------------------------------------------------
-train_sizes, train_scores, val_scores = learning_curve(
-    estimator=best_model,
-    X=X_train,
-    y=y_train,
-    cv=5,
-    scoring="accuracy",
-    train_sizes=np.linspace(0.1, 1.0, 10),
-    n_jobs=-1,
-    shuffle=True,
-    random_state=RANDOM_STATE,
-)
-
-train_mean = np.mean(train_scores, axis=1)
-train_std = np.std(train_scores, axis=1)
-
-val_mean = np.mean(val_scores, axis=1)
-val_std = np.std(val_scores, axis=1)
-
-plt.figure(figsize=(8, 6))
-
-plt.plot(train_sizes, train_mean, marker='o', label="Training Accuracy")
-plt.plot(train_sizes, val_mean, marker='s', label="Validation Accuracy")
-
-plt.fill_between(
-    train_sizes,
-    train_mean - train_std,
-    train_mean + train_std,
-    alpha=0.2
-)
-
-plt.fill_between(
-    train_sizes,
-    val_mean - val_std,
-    val_mean + val_std,
-    alpha=0.2
-)
-
-plt.xlabel("Training Samples")
-plt.ylabel("Accuracy")
-plt.title("Learning Curve - XGBoost (Best Params)")
-plt.grid(True)
-plt.legend()
-
-plt.tight_layout()
-plt.savefig("tuning result/learning_curve.png", dpi=150)
-plt.show()
+joblib.dump(best_model, "pkl/knn_model.pkl")
+joblib.dump(target_encoder, "pkl/knn_target_encoder.pkl")
+print("\nSaved trained pipeline to pkl/knn_model.pkl")
+print("Saved target label encoder to pkl/knn_target_encoder.pkl")
 
 # --------------------------------------------------------------------------
 # Example: how to load and use the saved model later
 # --------------------------------------------------------------------------
-# best_model = joblib.load("xgboost_obesity_model.pkl")
-# target_encoder = joblib.load("target_label_encoder.pkl")
+# best_model = joblib.load("pkl/knn_model.pkl")
+# target_encoder = joblib.load("pkl/knn_target_encoder.pkl")
 # preds = best_model.predict(new_data_df)
 # predicted_labels = target_encoder.inverse_transform(preds)
