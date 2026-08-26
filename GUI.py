@@ -22,12 +22,17 @@ Expects the following files to exist relative to where you launch the app
     pkl/target_label_encoder.pkl
     pkl/random_forest_model.pkl
     pkl/rf_target_encoder.pkl
+    pkl/knn_obesity_model.pkl
+    pkl/knn_target_label_encoder.pkl
 """
 
 import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.base import BaseEstimator, ClassifierMixin
+
+from statsmodels.miscmodels.ordinal_model import OrderedModel
 
 # --------------------------------------------------------------------------
 # MODEL REGISTRY
@@ -38,19 +43,55 @@ MODELS = {
     "XGBoost": {
         "model_path": "pkl/xgboost_obesity_model.pkl",
         "encoder_path": "pkl/target_label_encoder.pkl",
-        "display_name": "tuned XGBoost model",
+        "display_name": "XGBoost model",
     },
     "Random Forest": {
         "model_path": "pkl/random_forest_model.pkl",
         "encoder_path": "pkl/rf_target_encoder.pkl",
-        "display_name": "tuned Random Forest model",
+        "display_name": "Random Forest model",
     },
     "Ordinal Logistic Regression": {
         "model_path": "pkl/ordinal_logistic_regression_model.pkl",
         "encoder_path": "pkl/ordinal_logistic_target_encoder.pkl",
         "display_name": "Ordinal Logistic Regression model",
     },
+    "K-Nearest Neighbors": {
+        "model_path": "pkl/knn_model.pkl",
+        "encoder_path": "pkl/knn_target_encoder.pkl",
+        "display_name": "K-Nearest Neighbors model",
+    }
 }
+
+class OrderedLogisticClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(self, distr="logit", method="bfgs", maxiter=500, disp=False):
+        self.distr = distr
+        self.method = method
+        self.maxiter = maxiter
+        self.disp = disp
+
+    def fit(self, X, y):
+        X = np.asarray(X)
+        y = np.asarray(y)
+        self.classes_ = np.unique(y)
+        self.model_ = OrderedModel(y, X, distr=self.distr)
+        self.result_ = self.model_.fit(
+            method=self.method, maxiter=self.maxiter, disp=self.disp
+        )
+        return self
+
+    def predict_proba(self, X):
+        X = np.asarray(X)
+        return self.result_.model.predict(self.result_.params, exog=X)
+
+    def predict(self, X):
+        probs = self.predict_proba(X)
+        return self.classes_[np.argmax(probs, axis=1)]
+
+    @property
+    def coef_(self):
+        # params = [feature coefficients..., threshold cutoffs...]
+        n_features = self.model_.exog.shape[1]
+        return self.result_.params[:n_features]
 
 # --------------------------------------------------------------------------
 # PAGE CONFIG
