@@ -4,7 +4,7 @@ RANDOM FOREST TUNING RESULTS
 1. FINAL TUNING RESULT (BEST COMBINATION)
 --------------------------------------------------
 Best CV Accuracy: 0.9704
-Tuning Execution Time: 144.01 seconds
+Tuning Execution Time: 165.27 seconds
 
 Best Parameters:
   classifier__n_estimators: 300

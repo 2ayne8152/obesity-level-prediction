@@ -12,41 +12,45 @@ Pipeline:
   3. Evaluation (accuracy, precision, recall, F1, ROC-AUC, classification
      report, confusion matrix, timing)
   4. Save the final model
+  5. Generate learning curve
 """
 
 import time
 import warnings
 from pathlib import Path
 
+import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import label_binarize
 from sklearn.metrics import (
+    ConfusionMatrixDisplay,
     accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
     classification_report,
     confusion_matrix,
-    ConfusionMatrixDisplay,
+    f1_score,
+    precision_score,
+    recall_score,
     roc_auc_score,
 )
+# ADDED MISSING IMPORTS HERE
+from sklearn.model_selection import learning_curve
 from sklearn.neighbors import KNeighborsClassifier
-import joblib
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import label_binarize
 
 # Import centralized preprocessing function
 from Preprocessing import get_preprocessed_data
 
 warnings.filterwarnings("ignore")
 
+RANDOM_STATE = 42
+
 # --------------------------------------------------------------------------
 # PROJECT PATHS
 # --------------------------------------------------------------------------
-# Assuming this script is inside 'src/', .parent.parent gets you to the root 'Obesity' folder
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 RESULTS_DIR = PROJECT_ROOT / "results" / "models" / "KNN"
@@ -173,3 +177,57 @@ joblib.dump(target_encoder, encoder_path)
 
 print(f"\nSaved trained pipeline to {model_path.relative_to(PROJECT_ROOT)}")
 print(f"Saved target label encoder to {encoder_path.relative_to(PROJECT_ROOT)}")
+
+# --------------------------------------------------------------------------
+# 5. LEARNING CURVE
+# --------------------------------------------------------------------------
+print("\nGenerating Learning Curve...")
+train_sizes, train_scores, val_scores = learning_curve(
+    estimator=best_model,
+    X=X_train,
+    y=y_train,
+    cv=5,
+    scoring="accuracy",
+    train_sizes=np.linspace(0.1, 1.0, 10),
+    n_jobs=-1,
+    shuffle=True,
+    random_state=RANDOM_STATE,
+)
+
+train_mean = np.mean(train_scores, axis=1)
+train_std = np.std(train_scores, axis=1)
+
+val_mean = np.mean(val_scores, axis=1)
+val_std = np.std(val_scores, axis=1)
+
+plt.figure(figsize=(8, 6))
+
+plt.plot(train_sizes, train_mean, marker="o", label="Training Accuracy")
+plt.plot(train_sizes, val_mean, marker="s", label="Validation Accuracy")
+
+plt.fill_between(
+    train_sizes,
+    train_mean - train_std,
+    train_mean + train_std,
+    alpha=0.2,
+)
+
+plt.fill_between(
+    train_sizes,
+    val_mean - val_std,
+    val_mean + val_std,
+    alpha=0.2,
+)
+
+plt.xlabel("Training Samples")
+plt.ylabel("Accuracy")
+plt.title("Learning Curve - KNN (Best Params)")
+plt.grid(True)
+plt.legend()
+
+plt.tight_layout()
+
+lc_path = RESULTS_DIR / "knn_learning_curve.png"
+plt.savefig(lc_path, dpi=150)
+plt.close()
+print(f"Saved {lc_path.relative_to(PROJECT_ROOT)}")

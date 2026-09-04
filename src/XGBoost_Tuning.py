@@ -22,6 +22,8 @@ from pathlib import Path
 
 from sklearn.model_selection import learning_curve, RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.tree._tree import Tree as SklearnTree
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -226,12 +228,13 @@ plt.close()
 print(f"Saved {feat_imp_path.relative_to(PROJECT_ROOT)}")
 
 # --------------------------------------------------------------------------
-# 6. SAMPLE DECISION TREE (XGBOOST)
+# 6. SAMPLE DECISION TREE (XGBOOST) — rendered via sklearn's plot_tree
 # --------------------------------------------------------------------------
 def _entropy(counts):
     counts = np.asarray(counts, dtype=float)
     total = counts.sum()
-    if total == 0: return 0.0
+    if total == 0:
+        return 0.0
     p = counts[counts > 0] / total
     return float(-(p * np.log2(p)).sum())
 
@@ -243,7 +246,7 @@ def _parse_xgb_tree(tree_json):
             nodes[nid] = {
                 "feature": node["split"],
                 "threshold": node["split_condition"],
-                "yes": node["yes"],
+                "yes": node["yes"],  # branch taken when condition is TRUE (feature < threshold)
                 "no": node["no"],
                 "leaf": False,
             }
@@ -259,12 +262,7 @@ def _compute_stats(nodes, root_id, X_df, y_enc, class_names):
     def walk(nid, mask):
         counts = np.array([int(np.sum((y_enc == i) & mask)) for i in range(len(class_names))])
         samples = int(mask.sum())
-        stats[nid] = {
-            "samples": samples,
-            "value": counts,
-            "entropy": _entropy(counts),
-            "class": class_names[int(np.argmax(counts))] if samples > 0 else "N/A",
-        }
+        stats[nid] = {"samples": samples, "value": counts, "entropy": _entropy(counts)}
         node = nodes[nid]
         if not node["leaf"]:
             feat, thr = node["feature"], node["threshold"]
@@ -275,79 +273,68 @@ def _compute_stats(nodes, root_id, X_df, y_enc, class_names):
     walk(root_id, np.ones(len(y_enc), dtype=bool))
     return stats
 
-def plot_xgb_tree_sklearn_style(
-    booster, X_transformed, y_encoded, feature_names, class_names,
-    tree_index=0, max_display_depth=3, figsize=(34, 18),
-    title="Sample Decision Tree from Tuned XGBoost (Tree 0)", savepath=None,
-    x_spacing=4.0, y_spacing=3.0,
-):
-    X_df = pd.DataFrame(X_transformed, columns=feature_names)
-    tree_json = json.loads(booster.get_dump(dump_format="json")[tree_index])
-    nodes = _parse_xgb_tree(tree_json)
-    stats = _compute_stats(nodes, 0, X_df, y_encoded, class_names)
+def _node_depth(nodes, nid, depth=0):
+    node = nodes[nid]
+    if node["leaf"]:
+        return depth
+    return max(_node_depth(nodes, node["yes"], depth + 1),
+                _node_depth(nodes, node["no"], depth + 1))
 
-    positions = {}
-    leaf_counter = [0]
-    def assign_x(nid, depth):
-        node = nodes[nid]
-        if node["leaf"] or depth >= max_display_depth:
-            x = leaf_counter[0] * x_spacing
-            leaf_counter[0] += 1
-            positions[nid] = [x, -depth * y_spacing]
-            return x, x
-        lo, _ = assign_x(node["yes"], depth + 1)
-        _, hi = assign_x(node["no"], depth + 1)
-        x = (lo + hi) / 2
-        positions[nid] = [x, -depth * y_spacing]
-        return lo, hi
-    assign_x(0, 0)
+def _get_live_node_dtype():
+    # Fit a throwaway tree just to read this sklearn version's internal node dtype,
+    # so we don't hardcode fields that vary across sklearn versions.
+    tiny = DecisionTreeClassifier(max_depth=1).fit([[0], [1]], [0, 1])
+    return tiny.tree_.__getstate__()["nodes"].dtype
 
-    palette = matplotlib.colormaps["tab10"].resampled(max(len(class_names), 10))
-    class_color = {c: palette(i) for i, c in enumerate(class_names)}
+def build_fake_sklearn_tree(nodes, stats, feature_names, n_classes):
+    node_ids = sorted(nodes.keys())
+    id_map = {nid: i for i, nid in enumerate(node_ids)}
+    n_nodes = len(node_ids)
 
-    fig, ax = plt.subplots(figsize=figsize)
+    node_dtype = _get_live_node_dtype()
+    node_arr = np.zeros(n_nodes, dtype=node_dtype)
+    values = np.zeros((n_nodes, 1, n_classes), dtype=np.float64)
 
-    def draw(nid, depth, parent_xy=None, edge_label=None):
-        x, y = positions[nid]
-        s, node = stats[nid], nodes[nid]
-        truncated = (not node["leaf"]) and depth >= max_display_depth
-
-        if truncated:
-            text, facecolor = "(...)", "0.6"
+    for nid in node_ids:
+        i, node, s = id_map[nid], nodes[nid], stats[nid]
+        node_arr[i]["n_node_samples"] = s["samples"]
+        node_arr[i]["weighted_n_node_samples"] = float(s["samples"])
+        node_arr[i]["impurity"] = s["entropy"]
+        values[i, 0, :] = s["value"]
+        if node["leaf"]:
+            node_arr[i]["left_child"] = -1
+            node_arr[i]["right_child"] = -1
+            node_arr[i]["feature"] = -2
+            node_arr[i]["threshold"] = -2.0
         else:
-            lines = []
-            if not node["leaf"]:
-                lines.append(f"{node['feature']} < {node['threshold']:.3f}")
-            lines += [f"entropy = {s['entropy']:.3f}", f"samples = {s['samples']}",
-                      f"value = {list(s['value'])}", f"class = {s['class']}"]
-            text = "\n".join(lines)
-            purity = s["value"].max() / s["samples"] if s["samples"] else 0
-            base = class_color.get(s["class"], (0.9, 0.9, 0.9, 1))
-            facecolor = (base[0], base[1], base[2], 0.25 + 0.6 * purity)
+            node_arr[i]["left_child"] = id_map[node["yes"]]
+            node_arr[i]["right_child"] = id_map[node["no"]]
+            node_arr[i]["feature"] = feature_names.index(node["feature"])
+            node_arr[i]["threshold"] = node["threshold"]
+        if "missing_go_to_left" in node_dtype.names:
+            node_arr[i]["missing_go_to_left"] = 1
 
-        if parent_xy is not None:
-            ax.plot([parent_xy[0], x], [parent_xy[1], y], color="black", linewidth=0.8, zorder=1)
-            if edge_label:
-                ax.text((parent_xy[0] + x) / 2, (parent_xy[1] + y) / 2 + 0.15, edge_label,
-                        fontsize=10, ha="center", zorder=4,
-                        bbox=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="none"))
+    tree = SklearnTree(len(feature_names), np.array([n_classes], dtype=np.intp), 1)
+    tree.__setstate__({
+        "max_depth": int(max(_node_depth(nodes, nid) for nid in node_ids)),
+        "node_count": n_nodes,
+        "nodes": node_arr,
+        "values": values,
+    })
+    return tree
 
-        ax.text(x, y, text, ha="center", va="center", fontsize=7,
-                bbox=dict(boxstyle="round,pad=0.4", facecolor=facecolor, edgecolor="black"), zorder=3)
+def build_fake_tree_classifier(nodes, stats, feature_names, class_names):
+    n_classes, n_features = len(class_names), len(feature_names)
+    tree = build_fake_sklearn_tree(nodes, stats, feature_names, n_classes)
 
-        if not (node["leaf"] or truncated):
-            draw(node["yes"], depth + 1, (x, y), "True" if depth == 0 else None)
-            draw(node["no"], depth + 1, (x, y), "False" if depth == 0 else None)
-
-    draw(0, 0)
-    ax.set_xlim(-x_spacing, leaf_counter[0] * x_spacing)
-    ax.set_ylim(-max_display_depth * y_spacing - y_spacing, y_spacing)
-    ax.axis("off")
-    ax.set_title(title, fontsize=16)
-    plt.tight_layout()
-    if savepath:
-        plt.savefig(savepath, dpi=200)
-    plt.close()
+    clf = DecisionTreeClassifier(criterion="entropy", max_depth=1)
+    clf.fit(np.zeros((n_classes, n_features)), np.arange(n_classes))  # dummy fit to populate attrs
+    clf.tree_ = tree
+    clf.classes_ = np.array(class_names)
+    clf.n_classes_ = n_classes
+    clf.n_outputs_ = 1
+    clf.n_features_in_ = n_features
+    return clf
 
 # Generate the Tree Plot
 xgb_estimator = best_model.named_steps["classifier"]
@@ -355,19 +342,32 @@ class_names = list(target_encoder.classes_)
 X_train_transformed = best_model.named_steps["preprocessor"].transform(X_train)
 
 booster = xgb_estimator.get_booster()
-booster.feature_names = list(clean_feature_names) 
+booster.feature_names = list(clean_feature_names)
 
-tree_path = RESULTS_DIR / "xgboost_sample_tree.png"
-plot_xgb_tree_sklearn_style(
-    booster=booster,
-    X_transformed=X_train_transformed,
-    y_encoded=y_train,
+tree_json = json.loads(booster.get_dump(dump_format="json")[0])
+nodes = _parse_xgb_tree(tree_json)
+X_df = pd.DataFrame(X_train_transformed, columns=clean_feature_names)
+stats = _compute_stats(nodes, 0, X_df, y_train, class_names)
+
+fake_clf = build_fake_tree_classifier(nodes, stats, clean_feature_names, class_names)
+
+plt.figure(figsize=(25, 12))
+plot_tree(
+    fake_clf,
     feature_names=clean_feature_names,
     class_names=class_names,
-    tree_index=0,
-    max_display_depth=3,
-    savepath=tree_path,
+    filled=False,  # sklearn's impurity-shading assumes child entropy <= parent entropy,
+                    # which isn't guaranteed for XGBoost splits (unlike CART) and can
+                    # produce invalid color values; keep boxes unfilled to avoid that.
+    rounded=True,
+    max_depth=3,  # Capped at 3 so the image is readable in a document
+    fontsize=9,
 )
+plt.title("Sample Decision Tree from Tuned XGBoost (Tree 0)")
+plt.tight_layout()
+tree_path = RESULTS_DIR / "xgboost_sample_tree.png"
+plt.savefig(tree_path, dpi=300, bbox_inches="tight")
+plt.close()
 print(f"Saved {tree_path.relative_to(PROJECT_ROOT)}")
 
 # --------------------------------------------------------------------------

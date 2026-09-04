@@ -8,6 +8,7 @@ Pipeline:
   2. Set up Pipeline and run RandomizedSearchCV over hyperparameter space
   3. Save best parameters and individual parameter evaluation metrics to text file
   4. Generate and save diagnostic tuning plots
+  5. Generate and save learning curve plot
 """
 
 import contextlib
@@ -24,13 +25,20 @@ import seaborn as sns
 from tqdm import tqdm
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.model_selection import (
+    RandomizedSearchCV,
+    StratifiedKFold,
+    learning_curve,
+)
 from sklearn.pipeline import Pipeline
 
 # Import centralized preprocessing function
 from Preprocessing import get_preprocessed_data
 
 warnings.filterwarnings("ignore")
+
+RANDOM_STATE = 42
+
 
 # --------------------------------------------------------------------------
 # PROGRESS BAR HELPER FOR JOBLIB
@@ -76,7 +84,7 @@ rf_pipeline = Pipeline(
         ("preprocessor", preprocessor),
         (
             "classifier",
-            RandomForestClassifier(random_state=42, n_jobs=-1),
+            RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1),
         ),
     ]
 )
@@ -90,7 +98,7 @@ param_distributions = {
     "classifier__min_samples_leaf": [1, 2, 4, 8],
 }
 
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
 
 random_search = RandomizedSearchCV(
     estimator=rf_pipeline,
@@ -98,7 +106,7 @@ random_search = RandomizedSearchCV(
     n_iter=100,
     scoring="accuracy",
     cv=cv,
-    random_state=42,
+    random_state=RANDOM_STATE,
     n_jobs=-1,
     verbose=0,
     return_train_score=True,
@@ -239,5 +247,59 @@ for param_col, param_title in parameters_to_plot.items():
     plt.savefig(save_path, dpi=150)
     plt.close()
     print(f"Saved {save_path.relative_to(PROJECT_ROOT)}")
+
+# --------------------------------------------------------------------------
+# 6. LEARNING CURVE
+# --------------------------------------------------------------------------
+print("\nGenerating Learning Curve...")
+train_sizes, train_scores, val_scores = learning_curve(
+    estimator=random_search.best_estimator_,
+    X=X_train,
+    y=y_train,
+    cv=5,
+    scoring="accuracy",
+    train_sizes=np.linspace(0.1, 1.0, 10),
+    n_jobs=-1,
+    shuffle=True,
+    random_state=RANDOM_STATE,
+)
+
+train_mean = np.mean(train_scores, axis=1)
+train_std = np.std(train_scores, axis=1)
+
+val_mean = np.mean(val_scores, axis=1)
+val_std = np.std(val_scores, axis=1)
+
+plt.figure(figsize=(8, 6))
+
+plt.plot(train_sizes, train_mean, marker="o", label="Training Accuracy")
+plt.plot(train_sizes, val_mean, marker="s", label="Validation Accuracy")
+
+plt.fill_between(
+    train_sizes,
+    train_mean - train_std,
+    train_mean + train_std,
+    alpha=0.2,
+)
+
+plt.fill_between(
+    train_sizes,
+    val_mean - val_std,
+    val_mean + val_std,
+    alpha=0.2,
+)
+
+plt.xlabel("Training Samples")
+plt.ylabel("Accuracy")
+plt.title("Learning Curve - Random Forest (Best Params)")
+plt.grid(True)
+plt.legend()
+
+plt.tight_layout()
+
+lc_path = RESULTS_DIR / "rf_learning_curve.png"
+plt.savefig(lc_path, dpi=150)
+plt.close()
+print(f"Saved {lc_path.relative_to(PROJECT_ROOT)}")
 
 print(f"\nProcess Complete! Results saved to {RESULTS_DIR.relative_to(PROJECT_ROOT)}")
