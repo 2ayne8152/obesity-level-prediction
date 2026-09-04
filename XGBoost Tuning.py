@@ -325,6 +325,158 @@ plt.close()
 print("Saved image/feature_importance.png")
 
 # --------------------------------------------------------------------------
+# 6.5 SAMPLE DECISION TREE (XGBOOST) — sklearn-plot_tree-style rendering
+# --------------------------------------------------------------------------
+import json
+import matplotlib
+
+def _entropy(counts):
+    counts = np.asarray(counts, dtype=float)
+    total = counts.sum()
+    if total == 0:
+        return 0.0
+    p = counts[counts > 0] / total
+    return float(-(p * np.log2(p)).sum())
+
+def _parse_xgb_tree(tree_json):
+    nodes = {}
+    def walk(node):
+        nid = node["nodeid"]
+        if "children" in node:
+            nodes[nid] = {
+                "feature": node["split"],
+                "threshold": node["split_condition"],
+                "yes": node["yes"],  # branch taken when condition is TRUE (feature < threshold)
+                "no": node["no"],
+                "leaf": False,
+            }
+            for child in node["children"]:
+                walk(child)
+        else:
+            nodes[nid] = {"leaf": True}
+    walk(tree_json)
+    return nodes
+
+def _compute_stats(nodes, root_id, X_df, y_enc, class_names):
+    stats = {}
+    def walk(nid, mask):
+        counts = np.array([int(np.sum((y_enc == i) & mask)) for i in range(len(class_names))])
+        samples = int(mask.sum())
+        stats[nid] = {
+            "samples": samples,
+            "value": counts,
+            "entropy": _entropy(counts),
+            "class": class_names[int(np.argmax(counts))] if samples > 0 else "N/A",
+        }
+        node = nodes[nid]
+        if not node["leaf"]:
+            feat, thr = node["feature"], node["threshold"]
+            left_mask = mask & (X_df[feat].values < thr)
+            right_mask = mask & ~(X_df[feat].values < thr)
+            walk(node["yes"], left_mask)
+            walk(node["no"], right_mask)
+    walk(root_id, np.ones(len(y_enc), dtype=bool))
+    return stats
+
+
+def plot_xgb_tree_sklearn_style(
+    booster, X_transformed, y_encoded, feature_names, class_names,
+    tree_index=0, max_display_depth=3, figsize=(34, 18),
+    title="Sample Decision Tree from Tuned XGBoost (Tree 0)",
+    savepath=None,
+    x_spacing=4.0,     # horizontal gap between sibling leaves
+    y_spacing=3.0,      # vertical gap between depth levels
+):
+    X_df = pd.DataFrame(X_transformed, columns=feature_names)
+    tree_json = json.loads(booster.get_dump(dump_format="json")[tree_index])
+    nodes = _parse_xgb_tree(tree_json)
+    stats = _compute_stats(nodes, 0, X_df, y_encoded, class_names)
+
+    positions = {}
+    leaf_counter = [0]
+    def assign_x(nid, depth):
+        node = nodes[nid]
+        if node["leaf"] or depth >= max_display_depth:
+            x = leaf_counter[0] * x_spacing
+            leaf_counter[0] += 1
+            positions[nid] = [x, -depth * y_spacing]
+            return x, x
+        lo, _ = assign_x(node["yes"], depth + 1)
+        _, hi = assign_x(node["no"], depth + 1)
+        x = (lo + hi) / 2
+        positions[nid] = [x, -depth * y_spacing]
+        return lo, hi
+    assign_x(0, 0)
+
+    palette = matplotlib.colormaps["tab10"].resampled(max(len(class_names), 10))
+    class_color = {c: palette(i) for i, c in enumerate(class_names)}
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    def draw(nid, depth, parent_xy=None, edge_label=None):
+        x, y = positions[nid]
+        s, node = stats[nid], nodes[nid]
+        truncated = (not node["leaf"]) and depth >= max_display_depth
+
+        if truncated:
+            text, facecolor = "(...)", "0.6"
+        else:
+            lines = []
+            if not node["leaf"]:
+                lines.append(f"{node['feature']} < {node['threshold']:.3f}")
+            lines += [f"entropy = {s['entropy']:.3f}", f"samples = {s['samples']}",
+                      f"value = {list(s['value'])}", f"class = {s['class']}"]
+            text = "\n".join(lines)
+            purity = s["value"].max() / s["samples"] if s["samples"] else 0
+            base = class_color.get(s["class"], (0.9, 0.9, 0.9, 1))
+            facecolor = (base[0], base[1], base[2], 0.25 + 0.6 * purity)
+
+        # connector line drawn first, straight center-to-center; the box (higher zorder) will sit on top of its endpoints
+        if parent_xy is not None:
+            ax.plot([parent_xy[0], x], [parent_xy[1], y], color="black", linewidth=0.8, zorder=1)
+            if edge_label:
+                ax.text((parent_xy[0] + x) / 2, (parent_xy[1] + y) / 2 + 0.15, edge_label,
+                        fontsize=10, ha="center", zorder=4,
+                        bbox=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="none"))
+
+        ax.text(x, y, text, ha="center", va="center", fontsize=7,
+                bbox=dict(boxstyle="round,pad=0.4", facecolor=facecolor, edgecolor="black"), zorder=3)
+
+        if not (node["leaf"] or truncated):
+            draw(node["yes"], depth + 1, (x, y), "True" if depth == 0 else None)
+            draw(node["no"], depth + 1, (x, y), "False" if depth == 0 else None)
+
+    draw(0, 0)
+    ax.set_xlim(-x_spacing, leaf_counter[0] * x_spacing)
+    ax.set_ylim(-max_display_depth * y_spacing - y_spacing, y_spacing)
+    ax.axis("off")
+    ax.set_title(title, fontsize=16)
+    plt.tight_layout()
+    if savepath:
+        plt.savefig(savepath, dpi=200)
+    plt.show()
+
+# --- run it ---
+xgb_estimator = best_model.named_steps["classifier"]
+class_names = list(target_encoder.classes_)
+X_train_transformed = best_model.named_steps["preprocessor"].transform(X_train)
+
+booster = xgb_estimator.get_booster()
+booster.feature_names = list(all_feature_names)   # <-- add this line
+
+plot_xgb_tree_sklearn_style(
+    booster=booster,
+    X_transformed=X_train_transformed,
+    y_encoded=y_train,
+    feature_names=all_feature_names,
+    class_names=class_names,
+    tree_index=0,
+    max_display_depth=3,
+    savepath="image/xgboost_sample_tree.png",
+)
+print("Saved image/xgboost_sample_tree.png")
+
+# --------------------------------------------------------------------------
 # 7. SAVE THE FINAL MODEL
 # --------------------------------------------------------------------------
 import joblib
