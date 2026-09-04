@@ -1,0 +1,58 @@
+RANDOM FOREST TUNING RESULTS
+==================================================
+
+1. FINAL TUNING RESULT (BEST COMBINATION)
+--------------------------------------------------
+Best CV Accuracy: 0.9704
+Tuning Execution Time: 144.01 seconds
+
+Best Parameters:
+  classifier__n_estimators: 300
+  classifier__min_samples_split: 2
+  classifier__min_samples_leaf: 1
+  classifier__max_features: None
+  classifier__max_depth: 20
+  classifier__criterion: entropy
+
+
+2. ALL PARAMETER RESULTS (AVERAGE CV ACCURACY)
+--------------------------------------------------
+Number of Trees (classifier__n_estimators)
+  100: 0.9428
+  200: 0.9412
+  300: 0.9428
+  500: 0.9441
+  700: 0.9409
+  1000: 0.9409
+
+Max Depth (classifier__max_depth)
+  10: 0.9330
+  20: 0.9415
+  30: 0.9462
+  50: 0.9427
+  75: 0.9423
+  100: 0.9408
+  None: 0.9455
+
+Max Features (classifier__max_features)
+  None: 0.9514
+  log2: 0.9338
+  sqrt: 0.9381
+
+Min Samples Split (classifier__min_samples_split)
+  2: 0.9460
+  5: 0.9394
+  10: 0.9421
+  15: 0.9406
+
+Min Samples Leaf (classifier__min_samples_leaf)
+  1: 0.9481
+  2: 0.9488
+  4: 0.9454
+  8: 0.9303
+
+Splitting Criterion (classifier__criterion)
+  entropy: 0.9437
+  gini: 0.9361
+  log_loss: 0.9461
+

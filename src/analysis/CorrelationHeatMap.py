@@ -5,7 +5,7 @@ import seaborn as sns
 # ==========================
 # Load Dataset
 # ==========================
-df = pd.read_csv("ObesityDataSet_raw_and_data_sinthetic.csv")
+df = pd.read_csv("data/ObesityDataSet_raw_and_data_sinthetic.csv")
 
 # ==========================
 # Binary Variables
