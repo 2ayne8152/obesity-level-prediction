@@ -11,6 +11,7 @@ Pipeline:
 """
 
 import contextlib
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -113,7 +114,9 @@ print("============================================================")
 total_fits = random_search.n_iter * cv.n_splits
 start_time = time.time()
 
-with tqdm_joblib(tqdm(desc="Tuning Progress", total=total_fits)):
+with tqdm_joblib(
+    tqdm(desc="Tuning", total=total_fits, file=sys.stdout, mininterval=0.5)
+):
     random_search.fit(X_train, y_train)
 
 tuning_time = time.time() - start_time
