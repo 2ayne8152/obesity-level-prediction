@@ -173,11 +173,3 @@ joblib.dump(target_encoder, encoder_path)
 
 print(f"\nSaved trained pipeline to {model_path.relative_to(PROJECT_ROOT)}")
 print(f"Saved target label encoder to {encoder_path.relative_to(PROJECT_ROOT)}")
-
-# --------------------------------------------------------------------------
-# Example: how to load and use the saved model later
-# --------------------------------------------------------------------------
-# loaded_model = joblib.load(MODELS_DIR / "knn_model.pkl")
-# loaded_encoder = joblib.load(MODELS_DIR / "knn_target_encoder.pkl")
-# preds = loaded_model.predict(new_data_df)
-# predicted_labels = loaded_encoder.inverse_transform(preds)

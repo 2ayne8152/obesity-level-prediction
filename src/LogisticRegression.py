@@ -262,11 +262,3 @@ lc_path = RESULTS_DIR / "learning_curve_ordinal_logreg.png"
 plt.savefig(lc_path, dpi=150)
 plt.close()
 print(f"Saved {lc_path.relative_to(PROJECT_ROOT)}")
-
-# --------------------------------------------------------------------------
-# Example: how to load and use the saved model later
-# --------------------------------------------------------------------------
-# loaded_model = joblib.load(MODELS_DIR / "ordinal_logistic_regression_model.pkl")
-# loaded_encoder = joblib.load(MODELS_DIR / "ordinal_logistic_target_encoder.pkl")
-# preds = loaded_model.predict(new_data_df)
-# predicted_labels = loaded_encoder.inverse_transform(preds)
