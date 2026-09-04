@@ -41,23 +41,23 @@ from statsmodels.miscmodels.ordinal_model import OrderedModel
 # touching anything else in the app.
 MODELS = {
     "XGBoost": {
-        "model_path": "pkl/xgboost_obesity_model.pkl",
-        "encoder_path": "pkl/target_label_encoder.pkl",
+        "model_path": "models/xgboost_obesity_model.pkl",
+        "encoder_path": "models/target_label_encoder.pkl",
         "display_name": "XGBoost model",
     },
     "Random Forest": {
-        "model_path": "pkl/random_forest_model.pkl",
-        "encoder_path": "pkl/rf_target_encoder.pkl",
+        "model_path": "models/random_forest_model.pkl",
+        "encoder_path": "models/rf_target_encoder.pkl",
         "display_name": "Random Forest model",
     },
     "Ordinal Logistic Regression": {
-        "model_path": "pkl/ordinal_logistic_regression_model.pkl",
-        "encoder_path": "pkl/ordinal_logistic_target_encoder.pkl",
+        "model_path": "models/ordinal_logistic_regression_model.pkl",
+        "encoder_path": "models/ordinal_logistic_target_encoder.pkl",
         "display_name": "Ordinal Logistic Regression model",
     },
     "K-Nearest Neighbors": {
-        "model_path": "pkl/knn_model.pkl",
-        "encoder_path": "pkl/knn_target_encoder.pkl",
+        "model_path": "models/knn_model.pkl",
+        "encoder_path": "models/knn_target_encoder.pkl",
         "display_name": "K-Nearest Neighbors model",
     }
 }

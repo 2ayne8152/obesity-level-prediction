@@ -4,20 +4,13 @@ Habits and Physical Condition (UCI ML Repository, dataset id 544)
 DOI: https://doi.org/10.24432/C5H31Z
 
 This script mirrors the structure of XGBoost.py: same data loading, same
-preprocessing (ColumnTransformer with one-hot encoding + scaling), same
-train/test split, then fits an Ordinal (proportional-odds) Logistic
-Regression instead of XGBoost, and evaluates it the same way (accuracy,
-classification report, ROC-AUC, confusion matrix, feature importance,
-learning curve).
+preprocessing (imported from Preprocessing.py), same train/test split, then
+fits an Ordinal (proportional-odds) Logistic Regression.
 
 Because obesity level is an ORDINAL target (Insufficient Weight < Normal
 Weight < ... < Obesity Type III), the target is encoded in that clinical
 order rather than alphabetically, and statsmodels' OrderedModel is wrapped
-in a small scikit-learn-compatible class so it can sit inside the same
-Pipeline / learning_curve machinery XGBoost.py uses.
-
-Install requirements:
-    pip install ucimlrepo statsmodels scikit-learn pandas numpy matplotlib seaborn joblib
+in a small scikit-learn-compatible class.
 """
 
 import numpy as np
@@ -25,11 +18,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
+from pathlib import Path
 
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import learning_curve, train_test_split
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, OrdinalEncoder, StandardScaler
-from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import learning_curve
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (
     accuracy_score,
@@ -41,10 +33,22 @@ from sklearn.metrics import (
 
 from statsmodels.miscmodels.ordinal_model import OrderedModel
 
+# Import centralized preprocessing function
+from Preprocessing import get_preprocessed_data
+
 RANDOM_STATE = 42
 
 # --------------------------------------------------------------------------
-# MODEL SETTINGS (analogous to XGBoost.py's BEST_PARAMS)
+# PROJECT PATHS
+# --------------------------------------------------------------------------
+# Assuming this script is inside 'src/', .parent.parent gets you to the root 'Obesity' folder
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+RESULTS_DIR = PROJECT_ROOT / "results" / "models" / "Ordinal_Logistic_Regression"
+MODELS_DIR = PROJECT_ROOT / "models"
+
+# --------------------------------------------------------------------------
+# MODEL SETTINGS 
 # --------------------------------------------------------------------------
 ORDINAL_PARAMS = {
     "distr": "logit",   # proportional-odds logistic model
@@ -53,14 +57,9 @@ ORDINAL_PARAMS = {
     "disp": False,
 }
 
-
 # --------------------------------------------------------------------------
 # 0. SCIKIT-LEARN WRAPPER FOR statsmodels' OrderedModel
 # --------------------------------------------------------------------------
-# OrderedModel doesn't implement the sklearn estimator interface, so it
-# can't be dropped into a Pipeline or sklearn's learning_curve() as-is.
-# This thin wrapper gives it fit / predict / predict_proba so the rest of
-# this script can look exactly like XGBoost.py.
 class OrderedLogisticClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, distr="logit", method="bfgs", maxiter=500, disp=False):
         self.distr = distr
@@ -94,100 +93,15 @@ class OrderedLogisticClassifier(BaseEstimator, ClassifierMixin):
 
 
 # --------------------------------------------------------------------------
-# 1. LOAD DATA
+# 1. LOAD AND PREPROCESS DATA
 # --------------------------------------------------------------------------
-def load_data():
-    try:
-        from ucimlrepo import fetch_ucirepo
+print("Loading and preprocessing data...")
+X_train, X_test, y_train, y_test, preprocessor, target_encoder = get_preprocessed_data()
 
-        dataset = fetch_ucirepo(id=544)
-        X = dataset.data.features
-        y = dataset.data.targets.squeeze()  # Series
-        return X, y
-    except Exception as e:
-        print(f"ucimlrepo fetch failed ({e}); falling back to local CSV.")
-        df = pd.read_csv("csv/ObesityDataSet_raw_and_data_sinthetic.csv")
-        y = df["NObeyesdad"]
-        X = df.drop(columns=["NObeyesdad"])
-        return X, y
-
-X, y = load_data()
-print("Feature matrix shape:", X.shape)
-print("Target distribution:\n", y.value_counts())
-
-# --------------------------------------------------------------------------
-# 2. PREPROCESSING
-# --------------------------------------------------------------------------
-# Identify column types.
-#   - binary_cols:  2-category columns -> single 0/1 column
-#   - ordinal_cols: genuinely ORDERED categories -> single integer column,
-#                   in their real-world order (no/Sometimes/Frequently/Always)
-#   - nominal_cols: unordered multi-category columns -> one-hot encoded,
-#                   with one category dropped to avoid the dummy trap
-#   - numeric_cols: continuous features -> standardized
-binary_cols = ["Gender", "family_history_with_overweight", "FAVC", "SMOKE", "SCC"]
-ordinal_cols = ["CAEC", "CALC"]                    # truly ordered categories
-nominal_cols = ["MTRANS"]                          # unordered, multi-category
-numeric_cols = ["Age", "Height", "Weight", "FCVC", "NCP", "CH2O", "FAF", "TUE"]
-
-# Keep only columns that actually exist (robust to minor naming differences)
-binary_cols = [c for c in binary_cols if c in X.columns]
-ordinal_cols = [c for c in ordinal_cols if c in X.columns]
-nominal_cols = [c for c in nominal_cols if c in X.columns]
-numeric_cols = [c for c in numeric_cols if c in X.columns]
-
-# Explicit category orders. For binary columns the order just fixes which
-# label maps to 0 vs 1; for CAEC/CALC the order is the real severity order,
-# which is the whole point of encoding them as ordinals rather than dummies.
-binary_categories = [["Female", "Male"], ["no", "yes"], ["no", "yes"], ["no", "yes"], ["no", "yes"]]
-binary_categories = binary_categories[: len(binary_cols)]
-
-ordinal_categories = [["no", "Sometimes", "Frequently", "Always"]] * len(ordinal_cols)
-
-# Encode target labels in their natural CLINICAL order (not alphabetically —
-# this matters for an ordinal model). A plain LabelEncoder().fit(y) would
-# sort classes alphabetically and destroy the ordering the model relies on,
-# so we set classes_ explicitly instead.
-class_order = [
-    "Insufficient_Weight",
-    "Normal_Weight",
-    "Overweight_Level_I",
-    "Overweight_Level_II",
-    "Obesity_Type_I",
-    "Obesity_Type_II",
-    "Obesity_Type_III",
-]
-
-target_encoder = LabelEncoder()
-target_encoder.classes_ = np.array(class_order)
-y_encoded = target_encoder.transform(y)
 print("\nClasses (in ordinal order):", list(target_encoder.classes_))
 
-# ColumnTransformer: ordinal-encode binary/ordinal columns, one-hot encode
-# only the genuinely nominal column (MTRANS, drop="first" to keep full
-# column rank since OrderedModel has no intercept of its own), and scale
-# numeric columns. sparse_output=False because OrderedModel needs a dense
-# numeric matrix.
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("bin", OrdinalEncoder(categories=binary_categories), binary_cols),
-        ("ord", OrdinalEncoder(categories=ordinal_categories), ordinal_cols),
-        (
-            "nom",
-            OneHotEncoder(handle_unknown="ignore", drop="first", sparse_output=False),
-            nominal_cols,
-        ),
-        ("num", StandardScaler(), numeric_cols),
-    ]
-)
-
-# Train/test split (stratified to preserve class balance)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y_encoded, test_size=0.2, random_state=RANDOM_STATE, stratify=y_encoded
-)
-
 # --------------------------------------------------------------------------
-# 3. FIT ORDINAL LOGISTIC REGRESSION
+# 2. FIT ORDINAL LOGISTIC REGRESSION
 # --------------------------------------------------------------------------
 best_model = Pipeline(
     steps=[
@@ -200,7 +114,7 @@ print("\nFitting Ordinal Logistic Regression...")
 best_model.fit(X_train, y_train)
 
 # --------------------------------------------------------------------------
-# 4. EVALUATION ON TEST SET
+# 3. EVALUATION ON TEST SET
 # --------------------------------------------------------------------------
 final_preds = best_model.predict(X_test)
 final_acc = accuracy_score(y_test, final_preds)
@@ -241,6 +155,10 @@ roc_auc_df = pd.DataFrame(
 print("\nPer-class ROC-AUC (OvR):")
 print(roc_auc_df.to_string(index=False))
 
+# Ensure output directories exist dynamically
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
 # Confusion matrix
 cm = confusion_matrix(y_test, final_preds)
 fig, ax = plt.subplots(figsize=(9, 8))
@@ -248,24 +166,23 @@ disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=target_encoder
 disp.plot(ax=ax, xticks_rotation=45, cmap="Blues", colorbar=False)
 plt.title("Confusion Matrix — Ordinal Logistic Regression")
 plt.tight_layout()
-plt.savefig("image/confusion_matrix_ordinal_logreg.png", dpi=150)
+
+cm_path = RESULTS_DIR / "confusion_matrix_ordinal_logreg.png"
+plt.savefig(cm_path, dpi=150)
 plt.close()
-print("\nSaved image/confusion_matrix_ordinal_logreg.png")
+print(f"\nSaved {cm_path.relative_to(PROJECT_ROOT)}")
 
 # --------------------------------------------------------------------------
-# 5. FEATURE IMPORTANCE
+# 4. FEATURE IMPORTANCE
 # --------------------------------------------------------------------------
-# Recover feature names in the same order ColumnTransformer concatenates them
-ohe = best_model.named_steps["preprocessor"].named_transformers_["nom"]
-nom_feature_names = list(ohe.get_feature_names_out(nominal_cols))
-all_feature_names = binary_cols + ordinal_cols + nom_feature_names + numeric_cols
+# Extract feature names directly from the preprocessor and clean prefixes
+raw_feature_names = best_model.named_steps["preprocessor"].get_feature_names_out()
+clean_feature_names = [name.split("__")[-1] for name in raw_feature_names]
 
-# A proportional-odds ordinal logit has ONE coefficient per feature (shared
-# across all thresholds), so |coefficient| is a direct analogue of
-# XGBoost's feature_importances_.
+# A proportional-odds ordinal logit has ONE coefficient per feature
 coefficients = best_model.named_steps["classifier"].coef_
 feat_imp = (
-    pd.Series(np.abs(coefficients), index=all_feature_names)
+    pd.Series(np.abs(coefficients), index=clean_feature_names)
     .sort_values(ascending=False)
     .head(20)
 )
@@ -275,21 +192,27 @@ sns.barplot(x=feat_imp.values, y=feat_imp.index, color="steelblue")
 plt.title("Top 20 Feature Importances (|coef|) — Ordinal Logistic Regression")
 plt.xlabel("Absolute Coefficient")
 plt.tight_layout()
-plt.savefig("image/feature_importance_ordinal_logreg.png", dpi=150)
+
+feat_imp_path = RESULTS_DIR / "feature_importance_ordinal_logreg.png"
+plt.savefig(feat_imp_path, dpi=150)
 plt.close()
-print("Saved image/feature_importance_ordinal_logreg.png")
+print(f"Saved {feat_imp_path.relative_to(PROJECT_ROOT)}")
 
 # --------------------------------------------------------------------------
-# 6. SAVE THE FINAL MODEL
+# 5. SAVE THE FINAL MODEL
 # --------------------------------------------------------------------------
-joblib.dump(best_model, "pkl/ordinal_logistic_regression_model.pkl")
-joblib.dump(target_encoder, "pkl/ordinal_logistic_target_encoder.pkl")
-print("\nSaved trained pipeline to pkl/ordinal_logistic_regression_model.pkl")
-print("Saved target label encoder to pkl/ordinal_logistic_target_encoder.pkl")
+model_path = MODELS_DIR / "ordinal_logistic_regression_model.pkl"
+encoder_path = MODELS_DIR / "ordinal_logistic_target_encoder.pkl"
+
+joblib.dump(best_model, model_path)
+joblib.dump(target_encoder, encoder_path)
+print(f"\nSaved trained pipeline to {model_path.relative_to(PROJECT_ROOT)}")
+print(f"Saved target label encoder to {encoder_path.relative_to(PROJECT_ROOT)}")
 
 # --------------------------------------------------------------------------
-# LEARNING CURVE
+# 6. LEARNING CURVE
 # --------------------------------------------------------------------------
+print("\nGenerating Learning Curve...")
 train_sizes, train_scores, val_scores = learning_curve(
     estimator=best_model,
     X=X_train,
@@ -334,13 +257,16 @@ plt.grid(True)
 plt.legend()
 
 plt.tight_layout()
-plt.savefig("tuning result/learning_curve_ordinal_logreg.png", dpi=150)
-plt.show()
+
+lc_path = RESULTS_DIR / "learning_curve_ordinal_logreg.png"
+plt.savefig(lc_path, dpi=150)
+plt.close()
+print(f"Saved {lc_path.relative_to(PROJECT_ROOT)}")
 
 # --------------------------------------------------------------------------
 # Example: how to load and use the saved model later
 # --------------------------------------------------------------------------
-# best_model = joblib.load("pkl/ordinal_logistic_regression_model.pkl")
-# target_encoder = joblib.load("pkl/ordinal_logistic_target_encoder.pkl")
-# preds = best_model.predict(new_data_df)
-# predicted_labels = target_encoder.inverse_transform(preds)
+# loaded_model = joblib.load(MODELS_DIR / "ordinal_logistic_regression_model.pkl")
+# loaded_encoder = joblib.load(MODELS_DIR / "ordinal_logistic_target_encoder.pkl")
+# preds = loaded_model.predict(new_data_df)
+# predicted_labels = loaded_encoder.inverse_transform(preds)

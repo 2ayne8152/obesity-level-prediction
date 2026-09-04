@@ -1,3 +1,0 @@
-Model,Test Accuracy,Best CV Macro-F1
-Full features (incl. Weight & Height),0.9527186761229315,0.96901213331117
-Behavioral-only (no Weight/Height),0.8581560283687943,0.8346699010537822
